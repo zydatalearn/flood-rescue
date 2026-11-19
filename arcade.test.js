@@ -244,6 +244,45 @@ test('deep mode resolves the last move before failure and checkpoints the next l
   assert.ok(!h.texts.includes('步数用完了'))
 })
 
+test('floor six supply does not change the milestone or reopen after restoring it', t => {
+  const h = setup(t)
+  const key = 'dog-descent-v1'
+  const board = m.deal(m.seeded(183))
+  const move = m.legalMove(board)
+  const plan = m.exchange(board, ...move)
+  const cleared = m.clearWave(plan.swapped, plan.matches, plan.preferred).cleared
+  const ground = Array(m.SIZE).fill(null)
+  ground[[...cleared][0]] = { kind: 'soil', hp: 1, max: 1, core: true }
+  h.saved.set(key, { checkpoint: { board, ground, seed: 20, rng: 31, score: 0, floor: 5, steps: 1 } })
+  const game = mount(h.canvas, h.options, true, () => {})
+  t.after(() => game.setActive(false))
+  h.swipe(game, ...move)
+  h.drain()
+  const { checkpoint, milestone } = h.saved.get(key)
+  assert.equal(milestone.floor, 6)
+  assert.equal(checkpoint.reward, true)
+  assert.equal(milestone.reward, false)
+  h.tap(game, 195, 474)
+  h.drain()
+  assert.ok(h.saved.get(key).checkpoint.board.some(tile => tile.kind === 'rainbow'))
+  assert.deepEqual(h.saved.get(key).milestone.board, milestone.board)
+
+  // Restore a pre-fix milestone whose saved reward flag was still set.
+  const lastMoveGround = Array(m.SIZE).fill({ kind: 'rock', hp: 3, max: 3, core: true })
+  h.saved.set(key, { milestone: { ...milestone, reward: true },
+    checkpoint: { ...milestone, steps: 1, board, ground: lastMoveGround } })
+  game.setActive(false)
+  const resumed = mount(h.canvas, h.options, true, () => {})
+  t.after(() => resumed.setActive(false))
+  h.swipe(resumed, ...move)
+  h.drain()
+  assert.equal(h.saved.get(key).checkpoint, null)
+  h.tap(resumed, 195, 521)
+  h.drain()
+  assert.equal(h.saved.get(key).checkpoint.reward, false)
+  assert.deepEqual(h.saved.get(key).checkpoint.board, milestone.board)
+})
+
 test('main menu switches both new modes, shared tasks reward once and rescue storage survives', t => {
   const h = setup(t)
   const game = rescue.mount(h.canvas, h.options)
@@ -261,6 +300,8 @@ test('main menu switches both new modes, shared tasks reward once and rescue sto
   h.tap(game, 74, 742)
   game.key('Enter')
   h.tick()
+  assert.ok(h.texts.includes('最深第 1 层'))
+  assert.ok(!h.texts.includes('继续 · 第 1 层'))
   game.key('Enter')
   h.tick()
   assert.ok(h.texts.includes('00:55'))
@@ -268,4 +309,24 @@ test('main menu switches both new modes, shared tasks reward once and rescue sto
   assert.equal(dailyTasks(h.options.storage, goals).treats, 2)
   assert.equal(dailyTasks(h.options.storage, goals).treats, 2)
   assert.equal(petProgress(h.options.storage, 1), 3)
+})
+
+test('opening the gallery acknowledges treat unlocks and viewing medals acknowledges medals separately', t => {
+  const h = setup(t)
+  const key = 'dog-rescue-record-v1'
+  h.saved.set(key, { saves: 2, seenPets: 2, medals: [0] })
+  const goals = dailyTasks(h.options.storage).goals
+  dailyTasks(h.options.storage, goals)
+  const game = rescue.mount(h.canvas, h.options)
+  t.after(() => game.setActive(false))
+  h.tick()
+  h.tap(game, 195, 123)
+  h.tick()
+  assert.ok(h.texts.includes('战绩与小狗图鉴'))
+  assert.equal(h.saved.get(key).seenPets, 4)
+  assert.equal(h.saved.get(key).seenMedals, 0)
+  h.tap(game, 185, 524)
+  h.tick()
+  assert.ok(h.texts.includes('勋章与配饰'))
+  assert.equal(h.saved.get(key).seenMedals, 1)
 })

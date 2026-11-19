@@ -76,6 +76,7 @@
     const galleryImages = []
     const galleryLoading = new Set()
     let collection = petProgress(options.storage, record.saves)
+    let medalNotice
     let skin = collection >= SKINS[record.skin].after ? record.skin : 0
     let toolTarget = null
     let hint
@@ -260,7 +261,7 @@
         const start = animation ? frameTime() : null
         draw(Date.now())
         if (start !== null) effects.observeFrame(frameTime() - start)
-        if ((pausedAt === null && animation) || rise || nextRoundAt !== null) schedule()
+        if ((pausedAt === null && animation) || rise || nextRoundAt !== null || medalNotice) schedule()
         else if (!moodTimer && !intro && pausedAt === null && !state.outcome && state.water >= 8 && !reducedMotion()) {
           moodTimer = setTimeout(() => { moodTimer = undefined; schedule() }, 85)
         }
@@ -477,7 +478,7 @@
         polygon([[-8, 18], [1, 22], [9, 18], [9, 26], [1, 22], [-8, 26]], '#c081b0')
       }
       if (record.accessories.includes(4)) line([[-15, 18], [0, 23], [15, 18]], '#da805e', 4)
-      if (record.accessories.includes(5)) label('★', 11, 24, 10, '#ffe286', 'center')
+      if (record.accessories.includes(5)) label('★', 11, 24, 10, '#ffe286', 700, 'center')
       for (const side of [-1, 1]) {
         const eye = side * 13
         if (safe) line([[eye - 3, -4], [eye, -6], [eye + 3, -4]], ink, 2.5)
@@ -905,8 +906,9 @@
           .some(cell => state.level.closeAt?.[cell % state.level.cols] === 6 + (state.level.gateDelay ?? 0))
         stars = grade(water, early, false)
         record.saves++
-        collection++
-        unlockedPet = SKINS.findIndex(pet => pet.after === collection)
+        const previousCollection = collection
+        collection = petProgress(options.storage, record.saves)
+        unlockedPet = SKINS.findIndex(pet => previousCollection < pet.after && pet.after <= collection)
         if (unlockedPet < 0) unlockedPet = undefined
         if (mode === 'chapters') record.chapterStars[roundNumber - 1] = Math.max(record.chapterStars[roundNumber - 1], stars)
         if (water === 11) awardMedal(0)
@@ -973,6 +975,7 @@
       if (intro) {
         drawHome()
         if (gallery || help || chapterSelect || taskPanel) drawPanel()
+        drawMedalNotice(now)
         return
       }
 
@@ -983,9 +986,10 @@
       let rising = false
       if (rise) {
         progress = ease(clamp((now - rise.from) / 260))
-        rising = progress < 1
-        if (rising) view = { ...state, water: interpolate(rise.water, state.water, progress) }
-        else rise = null
+        if (progress < 1) {
+          view = { ...state, water: interpolate(rise.water, state.water, progress) }
+          rising = state.water > rise.water
+        } else rise = null
       }
       if (animation && pausedAt === null) {
         const age = Math.max(0, now - animation.from)
@@ -1095,6 +1099,7 @@
         } else if (unlockedPet !== undefined) dialogButton(91, 638, 208, `换上新伙伴 · ${SKINS[unlockedPet].name}`)
         else if (runComplete() || !won) dialogButton(115, 638, 160, '返回首页')
       }
+      drawMedalNotice(now)
     }
 
     function reset() {
@@ -1316,14 +1321,18 @@
 
     function dialogButton(x, y, width, title) {
       box(x, y, width, 34, 9, '#edc67f', PANEL_EDGE)
-      label(title, x + width / 2, y + 17, 13, INK, 700, 'center')
+      label(title, x + width / 2, y + 17, 15, INK, 700, 'center')
     }
 
     function drawHome() {
-      label('小狗别慌', 195, 90, 42, INK, 700, 'center')
-      dialogButton(37, 119, 100, '玩法')
-      dialogButton(145, 119, 100, '战绩图鉴')
-      dialogButton(253, 119, 100, record.muted ? '开启音效' : '静音')
+      label('小狗别慌', 195, 77, 42, INK, 700, 'center')
+      dialogButton(37, 106, 100, '玩法')
+      dialogButton(145, 106, 100, '战绩图鉴')
+      dialogButton(253, 106, 100, record.muted ? '开启音效' : '静音')
+      if (record.medals.length > record.seenMedals ||
+        SKINS.some(pet => record.seenPets < pet.after && pet.after <= collection)) {
+        oval(237, 111, 5, 5, '#b82d35')
+      }
       ctx.save()
       ctx.translate(0, 83)
       scene({ ...state, water: 1, outcome: null }, 0, false, 0)
@@ -1331,23 +1340,23 @@
       const { x, y, width, height } = START_BUTTON
       box(x, y, width, height, 12, '#edc67f', INK)
       label('开始救援', 195, y + height / 2 - 6, 17, INK, 700, 'center')
-      label(`最高 ${record.best} 轮`, 195, y + height / 2 + 12, 10, INK, 600, 'center')
+      label(`最高 ${record.best} 轮`, 195, y + height / 2 + 12, 13, INK, 600, 'center')
       dialogButton(36, 532, 150, '经典无限消消乐')
       dialogButton(204, 532, 150, '无尽深挖')
       dialogButton(36, 616, 150, '救援章节')
       dialogButton(204, 616, 150, '每日挑战')
-      label(`已通 ${chapterCount()}/8 · ${record.chapterStars.reduce((a, b) => a + b, 0)} 星`, 111, 664, 11, INK, 600, 'center')
+      label(`已通 ${chapterCount()}/8 · ${record.chapterStars.reduce((a, b) => a + b, 0)} 星`, 111, 664, 14, INK, 600, 'center')
       const today = record.daily?.date === dailyDate()
-      label(today ? `已通关 · ${(record.daily.ms / 1000).toFixed(1)} 秒` : '今日未通关', 279, 664, 11, INK, 600, 'center')
+      label(today ? `已通关 · ${(record.daily.ms / 1000).toFixed(1)} 秒` : '今日未通关', 279, 664, 14, INK, 600, 'center')
       let classic, mining
       try {
         classic = options.storage?.read('dog-classic-v1')
         mining = options.storage?.read('dog-descent-v1')
       } catch {}
       label(classic?.checkpoint?.score ? `继续 · ${classic.checkpoint.score} 分` : `最高 ${classic?.score ?? 0} 分`,
-        111, 580, 11, INK, 600, 'center')
-      label(mining?.checkpoint?.floor ? `继续 · 第 ${mining.checkpoint.floor} 层` :
-        `最深第 ${mining?.floor ?? 0} 层`, 279, 580, 11, INK, 600, 'center')
+        111, 580, 14, INK, 600, 'center')
+      label(mining?.checkpoint?.floor > 1 || mining?.checkpoint?.score > 0 ? `继续 · 第 ${mining.checkpoint.floor} 层` :
+        `最深第 ${mining?.floor ?? 0} 层`, 279, 580, 14, INK, 600, 'center')
       const tasks = dailyTasks(options.storage)
       dialogButton(108, 705, 174, `今日任务 ${tasks.values.filter((value, i) => value >= tasks.goals[i]).length}/3`)
     }
@@ -1397,16 +1406,16 @@
           const y = 300 + i * 33
           const earned = record.medals.includes(i)
           box(44, y, 302, 29, 7, earned ? '#efe0ad' : '#e7eee0', PANEL_EDGE)
-          label(name, 53, y + 14, 11, INK)
+          label(name, 53, y + 14, 15, INK)
           label(earned ? `${accessory} · ${record.accessories.includes(i) ? '已佩戴' : '可佩戴'}` : condition,
-            337, y + 14, 10, INK, 600, 'right')
+            337, y + 14, 14, INK, 600, 'right')
         })
         dialogButton(126, 507, 138, '返回图鉴')
       } else if (gallery) {
         label('战绩与小狗图鉴', 195, 271, 21, INK, 700, 'center')
-        label(`最高 ${record.best} 轮  ·  累计救援 ${record.saves} 只`, 195, 303, 13, INK, 700, 'center')
+        label(`最高 ${record.best} 轮  ·  累计救援 ${record.saves} 只`, 195, 303, 16, INK, 700, 'center')
         label(`最快 ${record.fastest ? (record.fastest / 1000).toFixed(1) + ' 秒' : '—'}  ·  最长 ${record.combo} 连消`,
-          195, 329, 13, INK, 700, 'center')
+          195, 329, 15, INK, 700, 'center')
         const image = galleryImages[galleryPage]
         for (const [i, entry] of SKINS.slice(galleryPage * 4, galleryPage * 4 + 4).entries()) {
           const x = 43 + i * 77
@@ -1423,13 +1432,14 @@
             oval(x + 35, 385, 20, 20, entry.fur?.[0] ?? '#edb361')
             label('汪', x + 35, 385, 14, INK, 700, 'center')
           }
-          label(entry.name, x + 35, 433, 12, INK, 700, 'center')
-          if (!unlocked) label(`${entry.after} 进度解锁`, x + 35, 451, 9, INK, 700, 'center')
+          label(entry.name, x + 35, 432, 16, INK, 700, 'center')
+          if (!unlocked) label(`${entry.after} 解锁`, x + 35, 452, 13, INK, 700, 'center')
         }
-        const summary = record.scores.length ? `本机榜单 · ${record.scores.join(' / ')} 轮` : '本机榜单 · 完成一局后记录'
-        label(`${summary} · 图鉴进度 ${collection}`, 195, 485, 11, INK, 600, 'center')
+        const summary = record.scores.length ? ` · 榜单 ${record.scores.join(' / ')} 轮` : ''
+        label(`图鉴进度 ${collection}${summary}`, 195, 485, 14, INK, 600, 'center')
         dialogButton(42, 507, 89, '返回')
         dialogButton(145, 507, 87, '勋章配饰')
+        if (record.medals.length > record.seenMedals) oval(225, 512, 5, 5, '#b82d35')
         dialogButton(245, 507, 100, galleryPage === 0 ? '下一页' : '上一页')
       } else if (choices) {
         label('选择一项救援改造', 195, 279, 21, INK, 700, 'center')
@@ -1498,7 +1508,11 @@
       gallery = true
       medalGallery = false
       collection = petProgress(options.storage, record.saves)
-      showGalleryPage(Math.floor(skin / 4))
+      const newest = SKINS.reduce((latest, pet, index) =>
+        record.seenPets < pet.after && pet.after <= collection ? index : latest, skin)
+      record.seenPets = Math.max(record.seenPets, collection)
+      save()
+      showGalleryPage(Math.floor(newest / 4))
     }
 
     function toggleMute() {
@@ -1515,7 +1529,23 @@
     function awardMedal(index) {
       if (record.medals.includes(index)) return
       record.medals.push(index)
+      record.accessories.push(index)
+      medalNotice = { text: `勋章解锁 · ${MEDALS[index][0]}`, until: Date.now() + 1600 }
       save()
+      schedule()
+    }
+
+    function drawMedalNotice(now) {
+      if (!medalNotice) return
+      const remaining = medalNotice.until - now
+      if (remaining <= 0) {
+        medalNotice = undefined
+        return
+      }
+      const fraction = Math.min(1, remaining / 180, (1600 - remaining) / 180)
+      const y = reducedMotion() ? 58 : 58 - 38 * (1 - fraction)
+      box(69, y, 252, 32, 9, '#edc67f', PANEL_EDGE)
+      label(medalNotice.text, 195, y + 16, 15, INK, 700, 'center')
     }
 
     function equipNewPet() {
@@ -1695,7 +1725,11 @@
         } else if (gallery) {
           if (y >= 507 && y <= 541) {
             if (x >= 42 && x <= 131) gallery = false
-            if (x >= 145 && x <= 232) medalGallery = true
+            if (x >= 145 && x <= 232) {
+              medalGallery = true
+              record.seenMedals = record.medals.length
+              save()
+            }
             if (x >= 245 && x <= 345) showGalleryPage(1 - galleryPage)
           }
           const card = Math.floor((x - 43) / 77)
@@ -1728,7 +1762,7 @@
         const { x, y, width, height } = START_BUTTON
         if (tap && target.x >= x && target.x <= x + width &&
           target.y >= y && target.y <= y + height) startRescue()
-        if (tap && target.y >= 119 && target.y <= 153) {
+        if (tap && target.y >= 106 && target.y <= 140) {
           if (target.x >= 37 && target.x <= 137) { help = true; schedule() }
           if (target.x >= 145 && target.x <= 245) openGallery()
           if (target.x >= 253 && target.x <= 353) toggleMute()

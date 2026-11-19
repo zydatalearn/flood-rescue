@@ -33,10 +33,10 @@
 
   function recordStore(storage) {
     const record = { best: 0, saves: 0, fastest: 0, combo: 0, daily: null, skin: 0, scores: [],
-      chapterStars: Array(8).fill(0), muted: false, medals: [], accessories: [] }
+      chapterStars: Array(8).fill(0), muted: false, medals: [], accessories: [], seenPets: 0, seenMedals: 0 }
     try {
       const saved = storage?.read(SAVE_KEY) || {}
-      for (const key of ['best', 'saves', 'fastest', 'combo']) {
+      for (const key of ['best', 'saves', 'fastest', 'combo', 'seenPets', 'seenMedals']) {
         if (Number.isSafeInteger(saved[key]) && saved[key] >= 0) record[key] = saved[key]
       }
       if (typeof saved.daily?.date === 'string' && Number.isSafeInteger(saved.daily.ms) && saved.daily.ms > 0) record.daily = saved.daily

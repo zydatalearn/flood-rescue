@@ -76,7 +76,10 @@
         record.broken += pendingBroken
         pendingBroken = 0
         record.checkpoint = lost ? null : { ...checkpoint, floor, steps, ground, reward }
-        if (milestone && (!record.milestone || record.milestone.floor <= floor)) record.milestone = record.checkpoint
+        if (milestone && (!record.milestone || record.milestone.floor <= floor)) {
+          record.milestone = { ...record.checkpoint, board: board.map(tile => ({ ...tile })),
+            ground: ground.map(tile => tile && { ...tile }), reward: false }
+        }
         if (lost && record.milestone) record.milestone.credited = Math.max(record.milestone.credited ?? 0, credited)
       } else record.checkpoint = { ...checkpoint, goal, goalCount, energy, feverMs: Math.max(0, feverUntil - Date.now()) }
       save()
@@ -560,19 +563,22 @@
         const p = clamp((now - phase.from) / phase.duration)
         ctx.save()
         ctx.globalAlpha = Math.min(1, (1 - p) * 3)
-        label(`COMBO ×${combo}`, 195, 660, 25 + Math.sin(p * Math.PI) * 5, '#ffe9a8', 'center')
+        label(`COMBO ×${combo}`, 195, TOP + 100, 25 + Math.sin(p * Math.PI) * 5, '#ffe9a8', 'center')
         ctx.restore()
-      } else if (digging) {
+      }
+      if (digging) {
         label(`核心剩余 ${ground.filter(value => value?.core).length}`, 195, 657, 17, '#ffe6a3', 'center')
         box(ctx, 153, 671, 84, 4, 2, '#6a4f64')
         const remaining = ground.filter(value => value?.core).length
         if (remaining) box(ctx, 153, 671, 84 * remaining / Math.min(5, 2 + Math.floor((floor - 1) / 5)), 4, 2, '#f8cf80')
         label(message, 195, 686, 12, '#d3dcff', 'center')
-      } else if (digging === false) {
-        label(inFever() ? `狂热 · 双倍得分 ${Math.ceil((feverUntil - now) / 1000)} 秒` :
+      } else {
+        const feverMs = Math.max(0, feverUntil - (paused || suspendedAt || now))
+        label(feverMs ? `狂热 · 双倍得分 ${Math.ceil(feverMs / 1000)} 秒` :
           `收集${['红', '蓝', '金', '紫', '绿'][goal]}色宝石 ${goalCount}/20`, 195, 671, 14, '#d3dcff', 'center')
         box(ctx, 132, 691, 126, 4, 2, '#58658f')
-        if (energy) box(ctx, 132, 691, 126 * Math.min(energy / 80, 1), 4, 2, '#f8d68a')
+        const progress = feverMs ? feverMs / 15000 : energy / 80
+        if (progress) box(ctx, 132, 691, 126 * Math.min(progress, 1), 4, 2, feverMs ? '#ffc34f' : '#aabcf2')
       }
       if (phase?.type === 'fall') {
         const t = clamp((now - phase.from) / phase.duration)
@@ -689,7 +695,7 @@
           }
           if (tx < 88 || tx > 302) return
           if (lost && record.milestone && ty >= 502 && ty <= 540) {
-            record.checkpoint = record.milestone
+            record.checkpoint = { ...record.milestone, reward: false }
             reset(true)
             return
           }
@@ -703,6 +709,7 @@
             if (confirmation) applyConfirmation()
             else if (reward && !paused) {
               const index = [35, 36, 43, 44, ...board.keys()].find(i => !board[i].kind && !locked(i)) ?? 35
+              board = board.slice()
               board[index] = match.tile(board[index].color, 'rainbow')
               reward = false
               saveStable()
