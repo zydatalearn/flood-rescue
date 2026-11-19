@@ -818,7 +818,7 @@
         }
       }
 
-      label('水闸救援', 19, 36, 26, INK)
+      label('小狗别慌', 19, 36, 26, INK)
       label(roundNumber ? `无限救援 · 第 ${roundNumber} 轮` : '第 1 关', 134, 37, 13, INK)
       box(262, 22, 51, 30, 9, PANEL, PANEL_EDGE)
       label('重来', 287.5, 37, 13, INK, 700, 'center')
