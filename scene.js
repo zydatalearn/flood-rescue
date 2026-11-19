@@ -2,9 +2,10 @@
   const puzzle = typeof module === 'object' ? require('./puzzle.js') : globalThis.RescuePuzzle
   const visuals = typeof module === 'object' ? require('./effects.js') : globalThis.RescueEffects
   const challenges = typeof module === 'object' ? require('./challenge.js') : globalThis.RescueChallenge
+  const arcadeScene = typeof module === 'object' ? require('./arcade.js') : globalThis.ArcadeScene
   const { MAX_WATER, floodTime, deal, adjacent, advanceWater, play, outlets, TOOL_COST, ROCK, PLATE, CRACKED,
     isTile, useTool, suggest } = puzzle
-  const { dailyDate, dailyRandom, recordStore, grade, UPGRADES, SKINS } = challenges
+  const { dailyDate, dailyRandom, recordStore, grade, UPGRADES, SKINS, MEDALS, dailyTasks, petProgress } = challenges
   const { SWAP_MS, RETURN_MS, MATCH_MS, CLEAR_MS, LINE_MS, swapPose, matchPose, createEffects } = visuals
   const WIDTH = 390
   const HEIGHT = 806
@@ -37,7 +38,7 @@
     const effects = createEffects(options.lowDetail)
     const { record, save } = recordStore(options.storage)
     const sound = {
-      play: event => { if (!record.muted) options.sound?.play(event) },
+      play: (...args) => { if (!record.muted) options.sound?.play(...args) },
       unlock: () => { if (!record.muted) options.sound?.unlock() },
     }
     const tileSprites = new Map()
@@ -59,16 +60,23 @@
     let choices = null
     let weather
     let supply = 0
+    let queuedSupply = 0
+    let archived = false
+    let arcade
+    let viewport = [options.width, options.height, options.pixelRatio]
     let restartConfirm = false
     let pausedAt = null
     let gallery = false
+    let medalGallery = false
+    let taskPanel = false
     let help = false
     let toolHelp = false
     let chapterSelect = false
     let galleryPage = 0
     const galleryImages = []
     const galleryLoading = new Set()
-    let skin = record.skin
+    let collection = petProgress(options.storage, record.saves)
+    let skin = collection >= SKINS[record.skin].after ? record.skin : 0
     let toolTarget = null
     let hint
     let hintDue = 8000
@@ -453,16 +461,23 @@
           line([[side * 17, 9], [side * 31, 10]], ink, 1.2)
         }
       }
-      if (record.medals.includes(3)) {
+      if (record.accessories.includes(3)) {
         box(-17, -32, 34, 8, 3, '#2a5562')
         box(-10, -39, 22, 11, 4, PANEL, '#2a5562')
-      } else if (record.medals.includes(0)) {
+      }
+      if (record.accessories.includes(0)) {
         line([[-24, -5], [24, -5]], '#34616a', 2)
         for (const side of [-1, 1]) oval(side * 12, -5, 9, 7, '#8ac6d45a')
-      } else if (record.medals.includes(1)) {
+      }
+      if (record.accessories.includes(1)) {
         oval(29, 22, 7, 5, '#f6ce68')
         oval(33, 18, 4, 4, '#ffe093')
       }
+      if (record.accessories.includes(2)) {
+        polygon([[-8, 18], [1, 22], [9, 18], [9, 26], [1, 22], [-8, 26]], '#c081b0')
+      }
+      if (record.accessories.includes(4)) line([[-15, 18], [0, 23], [15, 18]], '#da805e', 4)
+      if (record.accessories.includes(5)) label('★', 11, 24, 10, '#ffe286', 'center')
       for (const side of [-1, 1]) {
         const eye = side * 13
         if (safe) line([[eye - 3, -4], [eye, -6], [eye + 3, -4]], ink, 2.5)
@@ -890,7 +905,8 @@
           .some(cell => state.level.closeAt?.[cell % state.level.cols] === 6 + (state.level.gateDelay ?? 0))
         stars = grade(water, early, false)
         record.saves++
-        unlockedPet = SKINS.findIndex(pet => pet.after === record.saves)
+        collection++
+        unlockedPet = SKINS.findIndex(pet => pet.after === collection)
         if (unlockedPet < 0) unlockedPet = undefined
         if (mode === 'chapters') record.chapterStars[roundNumber - 1] = Math.max(record.chapterStars[roundNumber - 1], stars)
         if (water === 11) awardMedal(0)
@@ -923,14 +939,11 @@
       }
       else if (state.outcome === 'flooded' || state.outcome === 'blocked') {
         message = state.outcome === 'flooded' ? '水位到顶，小狗没能脱险。' : '棋盘上没有可消除的组合了。'
-        if (mode === 'endless' && roundNumber > 1) {
-          record.scores = [...record.scores, roundNumber - 1].sort((a, b) => b - a).slice(0, 5)
-          save()
-        }
+        archiveRescue()
       }
       else if (state.route.length) {
         const { cols, rows, closeAt } = state.level
-        const reachedClosed = state.route.some(({ cell }) => cell >= cols * (rows - 1) && state.water >= closeAt?.[cell % cols])
+        const reachedClosed = state.route.some(({ cell }) => cell >= cols * (rows - 1) && state.gateWater >= closeAt?.[cell % cols])
         message = reachedClosed ? '水路接到了已关闭的出口，改走仍开放的出口。' : state.level.exits
           ? '水已流进棋盘，继续接通开放的排水口。' : '水已流进棋盘，继续接到底边。'
       }
@@ -959,7 +972,7 @@
       ctx.scale(scale, scale)
       if (intro) {
         drawHome()
-        if (gallery || help || chapterSelect) drawPanel()
+        if (gallery || help || chapterSelect || taskPanel) drawPanel()
         return
       }
 
@@ -981,7 +994,8 @@
           animation = null
           effects.clearEffects()
           if (result) {
-            finish(result.state.outcome === 'escaped' ? result.state : { ...result.state, water: state.water })
+            finish(result.state.outcome === 'escaped' ? result.state :
+              { ...result.state, water: state.water, gateWater: Math.max(result.state.gateWater ?? 0, state.gateWater ?? 0) })
             view = state
           }
           const swipe = queuedSwipe
@@ -1132,6 +1146,10 @@
         hint = null
         hintDue = elapsed(now) + 8000
         const streak = combo || 3
+        if (streak >= 4 && mode !== 'daily') {
+          dailyTasks(options.storage, [1, 0, 0])
+          collection = petProgress(options.storage, record.saves)
+        }
         if (streak >= 5) awardMedal(1)
         if (streak > record.combo) {
           record.combo = streak
@@ -1238,12 +1256,15 @@
     }
 
     function restartRun(first = 1) {
+      archiveRescue()
+      archived = false
       roundNumber = first
       levelIndex = mode === 'chapters' && roundNumber <= 3 ? 0 : 1
       rerolls = 2
       upgrades = {}
       weather = undefined
       supply = 0
+      queuedSupply = 0
       usedTool = false
       runCharge = {}
       dailyElapsed = 0
@@ -1287,8 +1308,9 @@
         const cap = 2 * (upgrades.toolCost ?? TOOL_COST)
         runCharge = Object.fromEntries([...'ABCDE'].map(type => [type, Math.min(cap, (runCharge[type] ?? 0) + 3)]))
       }
+      supply = queuedSupply
+      queuedSupply = 0
       pickOpening()
-      supply = 0
       reset()
     }
 
@@ -1299,27 +1321,51 @@
 
     function drawHome() {
       label('小狗别慌', 195, 90, 42, INK, 700, 'center')
+      dialogButton(37, 119, 100, '玩法')
+      dialogButton(145, 119, 100, '战绩图鉴')
+      dialogButton(253, 119, 100, record.muted ? '开启音效' : '静音')
       ctx.save()
       ctx.translate(0, 83)
       scene({ ...state, water: 1, outcome: null }, 0, false, 0)
       ctx.restore()
       const { x, y, width, height } = START_BUTTON
       box(x, y, width, height, 12, '#edc67f', INK)
-      label('开始救援', 195, y + height / 2, 17, INK, 700, 'center')
-      dialogButton(36, 530, 150, '怎么玩')
-      dialogButton(204, 530, 150, '战绩图鉴')
-      dialogButton(36, 580, 150, '救援章节')
-      dialogButton(204, 580, 150, '每日挑战')
-      label(`已通 ${chapterCount()}/8 · ${record.chapterStars.reduce((a, b) => a + b, 0)} 星`, 111, 627, 11, INK, 600, 'center')
+      label('开始救援', 195, y + height / 2 - 6, 17, INK, 700, 'center')
+      label(`最高 ${record.best} 轮`, 195, y + height / 2 + 12, 10, INK, 600, 'center')
+      dialogButton(36, 532, 150, '经典无限消消乐')
+      dialogButton(204, 532, 150, '无尽深挖')
+      dialogButton(36, 616, 150, '救援章节')
+      dialogButton(204, 616, 150, '每日挑战')
+      label(`已通 ${chapterCount()}/8 · ${record.chapterStars.reduce((a, b) => a + b, 0)} 星`, 111, 664, 11, INK, 600, 'center')
       const today = record.daily?.date === dailyDate()
-      label(today ? `已通关 · ${(record.daily.ms / 1000).toFixed(1)} 秒` : '今日未通关', 279, 627, 11, INK, 600, 'center')
-      label(`最高救援 ${record.best} 轮`, 195, 661, 13, INK, 700, 'center')
+      label(today ? `已通关 · ${(record.daily.ms / 1000).toFixed(1)} 秒` : '今日未通关', 279, 664, 11, INK, 600, 'center')
+      let classic, mining
+      try {
+        classic = options.storage?.read('dog-classic-v1')
+        mining = options.storage?.read('dog-descent-v1')
+      } catch {}
+      label(classic?.checkpoint?.score ? `继续 · ${classic.checkpoint.score} 分` : `最高 ${classic?.score ?? 0} 分`,
+        111, 580, 11, INK, 600, 'center')
+      label(mining?.checkpoint?.floor ? `继续 · 第 ${mining.checkpoint.floor} 层` :
+        `最深第 ${mining?.floor ?? 0} 层`, 279, 580, 11, INK, 600, 'center')
+      const tasks = dailyTasks(options.storage)
+      dialogButton(108, 705, 174, `今日任务 ${tasks.values.filter((value, i) => value >= tasks.goals[i]).length}/3`)
     }
 
     function drawPanel() {
       box(-offsetX / scale, 0, width / scale, HEIGHT, 0, '#31534b')
       box(27, 240, 336, 321, 20, PANEL, PANEL_EDGE)
-      if (chapterSelect) {
+      if (taskPanel) {
+        label('今日任务', 195, 272, 22, INK, 700, 'center')
+        const tasks = dailyTasks(options.storage)
+        const names = ['救援 · 触发四连及以上', '深挖 · 突破地层', '经典 · 单局最高得分']
+        names.forEach((name, i) => {
+          label(name, 53, 327 + i * 49, 13, INK)
+          label(`${tasks.values[i]}/${tasks.goals[i]}`, 332, 327 + i * 49, 12, INK, 700, 'right')
+        })
+        label(tasks.claimed ? '已领到 2 份伙伴零食' : '全部完成自动获得 2 份伙伴零食', 195, 474, 12, INK, 600, 'center')
+        dialogButton(126, 507, 138, '返回')
+      } else if (chapterSelect) {
         label('救援章节', 195, 279, 23, INK, 700, 'center')
         for (let i = 0; i < 8; i++) {
           const x = 51 + i % 2 * 150
@@ -1345,6 +1391,17 @@
         lines.forEach((text, i) => label(text, 45, 325 + i * 36, 13, INK))
         dialogButton(49, 507, 124, '返回')
         dialogButton(217, 507, 124, toolHelp ? '基本玩法' : '工具说明')
+      } else if (gallery && medalGallery) {
+        label('勋章与配饰', 195, 271, 21, INK, 700, 'center')
+        MEDALS.forEach(([name, condition, accessory], i) => {
+          const y = 300 + i * 33
+          const earned = record.medals.includes(i)
+          box(44, y, 302, 29, 7, earned ? '#efe0ad' : '#e7eee0', PANEL_EDGE)
+          label(name, 53, y + 14, 11, INK)
+          label(earned ? `${accessory} · ${record.accessories.includes(i) ? '已佩戴' : '可佩戴'}` : condition,
+            337, y + 14, 10, INK, 600, 'right')
+        })
+        dialogButton(126, 507, 138, '返回图鉴')
       } else if (gallery) {
         label('战绩与小狗图鉴', 195, 271, 21, INK, 700, 'center')
         label(`最高 ${record.best} 轮  ·  累计救援 ${record.saves} 只`, 195, 303, 13, INK, 700, 'center')
@@ -1353,7 +1410,7 @@
         const image = galleryImages[galleryPage]
         for (const [i, entry] of SKINS.slice(galleryPage * 4, galleryPage * 4 + 4).entries()) {
           const x = 43 + i * 77
-          const unlocked = record.saves >= entry.after
+          const unlocked = collection >= entry.after
           box(x, 353, 70, 112, 8, galleryPage * 4 + i === skin ? '#ebd39f' : '#e7eee0', PANEL_EDGE)
           if (image) {
             const w = image.width / 2
@@ -1367,11 +1424,12 @@
             label('汪', x + 35, 385, 14, INK, 700, 'center')
           }
           label(entry.name, x + 35, 433, 12, INK, 700, 'center')
-          if (!unlocked) label(`${entry.after} 只解锁`, x + 35, 451, 10, INK, 700, 'center')
+          if (!unlocked) label(`${entry.after} 进度解锁`, x + 35, 451, 9, INK, 700, 'center')
         }
         const summary = record.scores.length ? `本机榜单 · ${record.scores.join(' / ')} 轮` : '本机榜单 · 完成一局后记录'
-        label(`${summary} · 勋章 ${record.medals.length}/6`, 195, 485, 11, INK, 600, 'center')
+        label(`${summary} · 图鉴进度 ${collection}`, 195, 485, 11, INK, 600, 'center')
         dialogButton(42, 507, 89, '返回')
+        dialogButton(145, 507, 87, '勋章配饰')
         dialogButton(245, 507, 100, galleryPage === 0 ? '下一页' : '上一页')
       } else if (choices) {
         label('选择一项救援改造', 195, 279, 21, INK, 700, 'center')
@@ -1392,6 +1450,8 @@
     }
 
     function returnHome() {
+      archiveRescue()
+      archived = false
       intro = true
       mode = 'endless'
       roundNumber = 0
@@ -1400,6 +1460,7 @@
       choices = null
       weather = undefined
       supply = 0
+      queuedSupply = 0
       chapterSelect = false
       pausedAt = null
       runCharge = {}
@@ -1409,9 +1470,42 @@
       reset()
     }
 
+    function archiveRescue() {
+      if (intro || archived || mode !== 'endless' || !roundNumber) return
+      const completed = roundNumber - Number(state.outcome !== 'escaped')
+      if (!completed) return
+      archived = true
+      record.scores = [...record.scores, completed].sort((a, b) => b - a).slice(0, 5)
+      save()
+    }
+
+    function launchArcade(digging) {
+      sound.unlock()
+      setActive(false)
+      arcade = arcadeScene.mount(canvas, {
+        ...options, sound, width: viewport[0], height: viewport[1], pixelRatio: viewport[2], skin, accessories: record.accessories,
+        isMuted: () => record.muted, toggleMute,
+        noteArcade: changes => dailyTasks(options.storage, changes),
+      }, digging, () => {
+        arcade = null
+        collection = petProgress(options.storage, record.saves)
+        resize(...viewport)
+        setActive(true)
+      })
+    }
+
     function openGallery() {
       gallery = true
+      medalGallery = false
+      collection = petProgress(options.storage, record.saves)
       showGalleryPage(Math.floor(skin / 4))
+    }
+
+    function toggleMute() {
+      record.muted = !record.muted
+      save()
+      sound.unlock()
+      schedule()
     }
 
     function chapterCount() {
@@ -1479,7 +1573,7 @@
     function selectUpgrade(index) {
       const upgrade = choices?.[index]
       if (!upgrade) return
-      if (upgrade.key === 'supply') supply = upgrade.value
+      if (upgrade.key === 'supply') queuedSupply = upgrade.value
       else if (upgrade.key === 'reroll') rerolls = Math.min(2, rerolls + 1)
       else upgrades = { ...upgrades, [upgrade.key]: upgrade.value }
       choices = null
@@ -1508,6 +1602,13 @@
         clockTimer = undefined
       }
       if (result.state.outcome) pauseClock(now)
+      if (!result.state.outcome && (type === 'B' || type === 'E')) {
+        if (type === 'B' && !reducedMotion()) rise = { from: now, water: state.water }
+        finish(result.state)
+        sound.play('water')
+        schedule()
+        return
+      }
       else state = { ...state, bonusMs: result.state.bonusMs, water: result.state.water }
       sound.play('chain')
       if (reducedMotion()) { finish(result.state); schedule() }
@@ -1559,10 +1660,12 @@
       const dy = target.y - origin.y
       const tap = Math.hypot(dx, dy) < 14
       if (tap) sound.unlock()
-      if (chapterSelect || help || gallery || choices || pausedAt !== null) {
+      if (taskPanel || chapterSelect || help || gallery || choices || pausedAt !== null) {
         if (!tap) return
         const { x, y } = target
-        if (chapterSelect) {
+        if (taskPanel) {
+          if (x >= 126 && x <= 264 && y >= 507 && y <= 541) { taskPanel = false; schedule() }
+        } else if (chapterSelect) {
           if (x >= 126 && x <= 264 && y >= 507 && y <= 541) { chapterSelect = false; schedule() }
           else if (x >= 51 && x <= 340 && y >= 306 && y <= 483 && (y - 306) % 47 <= 36) {
             const index = Math.floor((y - 306) / 47) * 2 + Number(x >= 201)
@@ -1578,14 +1681,26 @@
             if (x >= 49 && x <= 173) { help = false; toolHelp = false; schedule() }
             if (x >= 217 && x <= 341) { toolHelp = !toolHelp; schedule() }
           }
+        } else if (gallery && medalGallery) {
+          if (y >= 507 && y <= 541 && x >= 126 && x <= 264) medalGallery = false
+          if (x >= 44 && x <= 346 && y >= 300 && y < 498 && (y - 300) % 33 <= 29) {
+            const index = Math.floor((y - 300) / 33)
+            if (record.medals.includes(index)) {
+              record.accessories = record.accessories.includes(index) ? record.accessories.filter(value => value !== index) :
+                [...record.accessories, index]
+              save()
+            }
+          }
+          schedule()
         } else if (gallery) {
           if (y >= 507 && y <= 541) {
             if (x >= 42 && x <= 131) gallery = false
+            if (x >= 145 && x <= 232) medalGallery = true
             if (x >= 245 && x <= 345) showGalleryPage(1 - galleryPage)
           }
           const card = Math.floor((x - 43) / 77)
           const i = galleryPage * 4 + card
-          if (y >= 353 && y <= 465 && card >= 0 && card < 4 && record.saves >= SKINS[i].after) {
+          if (y >= 353 && y <= 465 && card >= 0 && card < 4 && collection >= SKINS[i].after) {
             skin = i
             record.skin = i
             save()
@@ -1600,27 +1715,29 @@
           if (y >= 374 && y <= 408) togglePause()
           if (y >= 425 && y <= 459) openGallery()
           if (y >= 476 && y <= 510) returnHome()
-          if (y >= 519 && y <= 553) {
-            record.muted = !record.muted
-            save()
-            sound.unlock()
-            schedule()
-          }
+          if (y >= 519 && y <= 553) toggleMute()
         }
         return
       }
       if (intro) {
+        if (tap && target.y >= 532 && target.y <= 566) {
+          if (target.x >= 36 && target.x <= 186) launchArcade(false)
+          if (target.x >= 204 && target.x <= 354) launchArcade(true)
+          return
+        }
         const { x, y, width, height } = START_BUTTON
         if (tap && target.x >= x && target.x <= x + width &&
           target.y >= y && target.y <= y + height) startRescue()
-        if (tap && target.y >= 530 && target.y <= 564) {
-          if (target.x >= 36 && target.x <= 186) { help = true; schedule() }
-          if (target.x >= 204 && target.x <= 354) openGallery()
+        if (tap && target.y >= 119 && target.y <= 153) {
+          if (target.x >= 37 && target.x <= 137) { help = true; schedule() }
+          if (target.x >= 145 && target.x <= 245) openGallery()
+          if (target.x >= 253 && target.x <= 353) toggleMute()
         }
-        if (tap && target.y >= 580 && target.y <= 614) {
+        if (tap && target.y >= 616 && target.y <= 650) {
           if (target.x >= 36 && target.x <= 186) { chapterSelect = true; schedule() }
           if (target.x >= 204 && target.x <= 354) startRescue('daily')
         }
+        if (tap && target.y >= 705 && target.y <= 739 && target.x >= 108 && target.x <= 282) { taskPanel = true; schedule() }
         return
       }
       if (tap) {
@@ -1691,6 +1808,10 @@
 
     function key(value) {
       sound.unlock()
+      if (taskPanel) {
+        if (value === 'Escape' || value === 'Enter') { taskPanel = false; schedule(); return true }
+        return false
+      }
       if (restartConfirm) {
         if (value === 'Enter') { restartRun(); return true }
         if (value === 'Escape') { cancelRestart(); return true }
@@ -1705,8 +1826,9 @@
         return false
       }
       if (gallery || help) {
+        if (gallery && medalGallery && (value === 'Escape' || value === 'Enter')) { medalGallery = false; schedule(); return true }
         if (gallery && (value === 'ArrowLeft' || value === 'ArrowRight')) { showGalleryPage(1 - galleryPage); return true }
-        if (value === 'Escape' || value === 'Enter') { gallery = false; help = false; schedule(); return true }
+        if (value === 'Escape' || value === 'Enter') { gallery = false; help = false; toolHelp = false; schedule(); return true }
         return false
       }
       if (choices) {
@@ -1719,6 +1841,8 @@
       }
       if (pausedAt !== null) return false
       if (intro) {
+        if (value.toLowerCase() === 'm') { launchArcade(false); return true }
+        if (value.toLowerCase() === 'x') { launchArcade(true); return true }
         if (value.toLowerCase() === 'd') { startRescue('daily'); return true }
         if (value.toLowerCase() === 'c') { chapterSelect = true; schedule(); return true }
         if (value.toLowerCase() === 'g') { openGallery(); return true }
@@ -1756,7 +1880,14 @@
 
     resize(options.width, options.height, options.pixelRatio)
     announce('怎么玩。交换相邻方块，凑成三个同色，把水引到金色排水口。按回车开始救援。')
-    return { down, up, cancel: () => { pressed = null }, resize, key, setActive }
+    return {
+      down: (...args) => (arcade?.down ?? down)(...args),
+      up: (...args) => (arcade?.up ?? up)(...args),
+      cancel: () => { if (arcade) arcade.cancel(); else pressed = null },
+      resize: (...args) => { viewport = args; (arcade?.resize ?? resize)(...args) },
+      key: value => (arcade?.key ?? key)(value),
+      setActive: value => (arcade?.setActive ?? setActive)(value),
+    }
   }
 
   if (typeof module === 'object') module.exports = { mount }

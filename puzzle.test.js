@@ -160,21 +160,21 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   const opening = deal(0, () => 0)
   const moves = opening.paths[0]
   tick(0)
-  assert.ok(labels.includes('怎么玩'))
+  assert.ok(labels.includes('玩法'))
   now += 60000
   swipe(moves[0])
   assert.equal(frames.length, 0)
   game.setActive(false)
   game.setActive(true)
   tick(0)
-  assert.ok(labels.includes('怎么玩'))
+  assert.ok(labels.includes('玩法'))
   game.down(195, 486)
   game.up(195, 486)
   labels.length = 0
   tick(0)
   assert.ok(labels.includes('00:55'))
   assert.ok(labels.includes('出口'))
-  assert.ok(!labels.includes('怎么玩'))
+  assert.ok(!labels.includes('玩法'))
   assert.match(announcements.at(-1), /交换描边/)
   announcements.length = 0
   const badSwap = opening.state.board.findIndex((tile, i, board) =>

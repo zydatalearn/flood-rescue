@@ -33,14 +33,14 @@
 
   function recordStore(storage) {
     const record = { best: 0, saves: 0, fastest: 0, combo: 0, daily: null, skin: 0, scores: [],
-      chapterStars: Array(8).fill(0), muted: false, medals: [] }
+      chapterStars: Array(8).fill(0), muted: false, medals: [], accessories: [] }
     try {
       const saved = storage?.read(SAVE_KEY) || {}
       for (const key of ['best', 'saves', 'fastest', 'combo']) {
         if (Number.isSafeInteger(saved[key]) && saved[key] >= 0) record[key] = saved[key]
       }
       if (typeof saved.daily?.date === 'string' && Number.isSafeInteger(saved.daily.ms) && saved.daily.ms > 0) record.daily = saved.daily
-      if (SKINS[saved.skin] && record.saves >= SKINS[saved.skin].after) record.skin = saved.skin
+      if (Number.isInteger(saved.skin) && SKINS[saved.skin]) record.skin = saved.skin
       if (Array.isArray(saved.chapterStars)) {
         record.chapterStars = record.chapterStars.map((_, index) => {
           const score = saved.chapterStars[index]
@@ -49,6 +49,7 @@
       }
       record.muted = saved.muted === true
       if (Array.isArray(saved.medals)) record.medals = [...new Set(saved.medals.filter(value => Number.isInteger(value) && value >= 0 && value < 6))]
+      if (Array.isArray(saved.accessories)) record.accessories = [...new Set(saved.accessories.filter(value => record.medals.includes(value)))]
       if (Array.isArray(saved.scores)) {
         record.scores = saved.scores.filter(score => Number.isSafeInteger(score) && score > 0)
           .sort((a, b) => b - a).slice(0, 5)
@@ -66,7 +67,55 @@
     return 1 + Number(water <= 6) + Number((risky || water <= 3) && !hinted)
   }
 
-  const challenge = { dailyDate, dailyRandom, recordStore, grade, UPGRADES, SKINS }
+  const MEDALS = [
+    ['极限脱险', '水位 11 时完成救援', '泳镜'],
+    ['五连高手', '一次消除至少五连', '小黄鸭'],
+    ['徒手救援', '不用道具通过第 5 轮', '领结'],
+    ['救援船长', '无限救援通过第 10 轮', '船长帽'],
+    ['章节全通', '通关八个救援章节', '围巾'],
+    ['每日全通', '完成同一天的三盘挑战', '星星徽章'],
+  ]
+
+  function dailyTasks(storage, changes) {
+    const date = dailyDate()
+    const key = 'dog-shared-tasks-v1'
+    let saved
+    try { saved = storage?.read(key) } catch {}
+    const variant = Number(date.slice(-2)) % 3
+    const goals = [2 + variant, 2 + variant, 3000 + variant * 1000]
+    const treats = Number.isSafeInteger(saved?.treats) && saved.treats >= 0 ? saved.treats : 0
+    const state = { date, values: [0, 0, 0], treats, claimed: false }
+    if (saved?.date === date && Array.isArray(saved.values)) {
+      state.values = goals.map((limit, i) => Number.isFinite(saved.values[i]) ? Math.max(0, Math.min(saved.values[i], limit)) : 0)
+      state.claimed = saved.claimed === true
+    }
+    if (changes) {
+      const next = goals.map((limit, i) => Math.min(limit, i === 2
+        ? Math.max(state.values[i], changes[i] || 0) : state.values[i] + (changes[i] || 0)))
+      if (next.some((value, i) => value !== state.values[i])) {
+        state.values = next
+        if (!state.claimed && next.every((value, i) => value >= goals[i])) {
+          state.claimed = true
+          state.treats += 2
+        }
+        try { storage?.write(key, state) } catch {}
+      }
+    }
+    return { ...state, goals }
+  }
+
+  function petProgress(storage, rescues) {
+    let treats = dailyTasks(storage).treats
+    for (const key of ['dog-classic-v1', 'dog-descent-v1']) {
+      try {
+        const value = storage?.read(key)?.treats
+        if (Number.isSafeInteger(value) && value > 0) treats += value
+      } catch {}
+    }
+    return rescues + treats
+  }
+
+  const challenge = { dailyDate, dailyRandom, recordStore, grade, UPGRADES, SKINS, MEDALS, dailyTasks, petProgress }
   if (typeof module === 'object') module.exports = challenge
   else globalThis.RescueChallenge = challenge
 })()

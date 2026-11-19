@@ -23,6 +23,10 @@
       {
         "value": "puzzle.test.js",
         "type": "file"
+      },
+      {
+        "value": "arcade.test.js",
+        "type": "file"
       }
     ],
     "include": []

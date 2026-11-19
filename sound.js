@@ -18,7 +18,7 @@
           if (context?.state === 'suspended') context.resume()?.catch?.(() => {})
         } catch {}
       },
-      play(event) {
+      play(event, intensity = 1) {
         if (event === 'chain' || event === 'rescue') {
           try { vibrate?.() } catch {}
         }
@@ -30,7 +30,7 @@
           const oscillator = context.createOscillator()
           const gain = context.createGain()
           const start = now + i * 0.048
-          oscillator.frequency.value = notes[i]
+          oscillator.frequency.value = notes[i] * (event === 'chain' ? 1 + Math.max(0, intensity - 1) * 0.07 : 1)
           oscillator.type = event === 'swap' ? 'triangle' : 'sine'
           gain.gain.setValueAtTime(0.0001, start)
           gain.gain.exponentialRampToValueAtTime(0.065, start + 0.008)
