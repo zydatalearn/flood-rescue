@@ -1,14 +1,12 @@
 (function () {
   const puzzle = typeof module === 'object' ? require('./puzzle.js') : globalThis.RescuePuzzle
+  const visuals = typeof module === 'object' ? require('./effects.js') : globalThis.RescueEffects
   const { MAX_WATER, floodTime, deal, adjacent, advanceWater, play, outlets } = puzzle
+  const { SWAP_MS, RETURN_MS, MATCH_MS, CLEAR_MS, LINE_MS, swapPose, matchPose, createEffects } = visuals
   const WIDTH = 390
   const HEIGHT = 806
   const BOARD_INSET = 9
   const START_BUTTON = { x: 99, y: 462, width: 192, height: 48 }
-  const SWAP_MS = 68
-  const CLEAR_MS = 80
-  const BURST_MS = 155
-  const LONG_BURST_MS = 280
   const NEXT_ROUND_MS = 950
   const BACKGROUND = '#f3ecdd'
   const INK = '#24443e'
@@ -31,8 +29,11 @@
   const clamp = value => Math.min(1, Math.max(0, value))
 
   function mount(canvas, options) {
-    const ctx = canvas.getContext('2d')
+    let ctx = canvas.getContext('2d')
     const { safeTop = 0, safeBottom = 0, requestFrame } = options
+    const effects = createEffects(options.lowDetail)
+    const tileSprites = new Map()
+    const frameTime = () => globalThis.performance?.now() ?? Date.now()
     const announce = options.announce || (() => {})
     const reducedMotion = options.reducedMotion || (() => false)
     const random = options.random || Math.random
@@ -41,6 +42,7 @@
     let roundNumber = 0
     let nextRoundAt = null
     let active = true
+    let hiddenAt
     let intro = true
     let guided = true
     let openingMove
@@ -78,6 +80,7 @@
       if (next === state) return
       if (next.outcome === 'flooded') {
         animation = null
+        effects.clearEffects()
         queuedSwipe = null
         rise = null
         pauseClock(now)
@@ -110,17 +113,21 @@
     }
 
     function setActive(nextActive) {
-      active = nextActive
+      if (active === nextActive) return
       const now = Date.now()
+      active = nextActive
       if (!active) {
         updateWater(now)
         pauseClock(now)
+        hiddenAt = now
+        rise = null
+        queuedSwipe = null
         pressed = null
-      } else if (!intro && clockSince === null && !state.outcome && !animation?.result?.state.outcome) {
-        clockSince = now
-        schedule()
+      } else {
+        if (animation) animation.from += now - hiddenAt
+        if (!intro && clockSince === null && !state.outcome && !animation?.result?.state.outcome) clockSince = now
+        if (animation || !state.outcome || nextRoundAt !== null) schedule()
       }
-      if (active && nextRoundAt !== null) schedule()
     }
 
     function pickOpening() {
@@ -153,9 +160,11 @@
     }
 
     function resize(nextWidth, nextHeight, pixelRatio) {
+      const nextDensity = Math.min(pixelRatio, options.lowDetail ? 1.5 : 2)
+      if (width === nextWidth && height === nextHeight && density === nextDensity) return
       width = nextWidth
       height = nextHeight
-      density = Math.min(pixelRatio, 2)
+      density = nextDensity
       canvas.width = Math.round(width * density)
       canvas.height = Math.round(height * density)
       const usableHeight = Math.max(1, height - safeTop - safeBottom)
@@ -163,15 +172,20 @@
       offsetX = (width - WIDTH * scale) / 2
       offsetY = safeTop + (usableHeight - HEIGHT * scale) / 2
       layout = boardLayout(state.level)
+      tileSprites.clear()
+      if (animation?.result) prepareParticles(animation.result)
       schedule()
     }
 
     function schedule() {
-      if (framePending) return
+      if (framePending || !active) return
       framePending = true
       requestFrame(() => {
         framePending = false
+        if (!active) return
+        const start = animation ? frameTime() : null
         draw(Date.now())
+        if (start !== null) effects.observeFrame(frameTime() - start)
         if (animation || rise || (active && nextRoundAt !== null)) schedule()
       })
     }
@@ -456,7 +470,7 @@
       line([[36, y + 13], [36, y + 18], [39, y + 20]], '#ffffff', 1.5)
       label(connected ? '用时' : '距淹没', 51, y + 19, 12, timeColor)
       if (!connected && bonusNotice?.until > now) {
-        label(`+${bonusNotice.seconds} 秒`, 110, y + 19, 12, '#246756', 700, 'center')
+        label(`+${bonusNotice.seconds} 秒`, 102, y + 19, 11, '#246756', 700, 'center')
       }
       label(`00:${String(seconds).padStart(2, '0')}`, 174, y + 19, 17, timeColor, 700, 'right')
       box(201, y, 172, 37, 9, PANEL, PANEL_EDGE)
@@ -465,41 +479,71 @@
       label(connected ? '水路已接通' : routeGoal, 244, y + 19, 12, connected ? '#246756' : INK)
     }
 
-    function tile(type, x, y, selectedTile, focused, clearProgress = 0) {
+    function paintTile(type, x, y) {
       const [bright, middle, edge] = COLORS[type]
       const { cell, cellWidth } = layout
-      ctx.save()
-      if (clearProgress) {
-        ctx.translate(x + cellWidth / 2, y + cell / 2)
-        const size = 1 - clearProgress * 0.5
-        ctx.scale(size, size)
-        ctx.translate(-x - cellWidth / 2, -y - cell / 2)
-        ctx.globalAlpha = 1 - clearProgress
-      }
       const radius = cell * 0.25
-      const depth = cell * 0.13
-      const top = y + (selectedTile ? depth * 0.72 : 0)
+      const depth = cell * 0.12
       const faceHeight = cell - depth
       box(x, y + 1.5, cellWidth, cell, radius, '#294a3e38')
       box(x, y + depth, cellWidth, faceHeight, radius, edge + 'a6')
-      box(x, top, cellWidth, faceHeight, radius, ramp(top, faceHeight, bright, middle))
-      // A curved rim catches the light on the upper-left shoulder of the key.
-      ctx.beginPath()
-      ctx.moveTo(x + 2, top + radius + 1)
-      ctx.quadraticCurveTo(x + 2, top + 2, x + radius + 1, top + 2)
-      ctx.lineTo(x + cellWidth * 0.62, top + 2)
-      ctx.lineWidth = 1.5
-      ctx.strokeStyle = '#fffaf1a8'
-      ctx.stroke()
-      const iconSize = Math.min(0.98, cell / 40)
-      symbol(type, x + cellWidth / 2, top + faceHeight / 2 + 0.8, iconSize, edge)
+      box(x, y, cellWidth, faceHeight, radius, ramp(y, faceHeight, bright, middle))
+      box(x + cellWidth * 0.12, y + faceHeight * 0.1, cellWidth * 0.46, faceHeight * 0.12,
+        faceHeight * 0.055, '#fff9ec42')
+      const iconSize = Math.min(0.98, cell / 38)
+      symbol(type, x + cellWidth / 2, y + faceHeight / 2 + 0.8, iconSize, edge)
+    }
+
+    function tileSprite(type) {
+      if (!options.createTileSurface) return null
+      if (tileSprites.has(type)) return tileSprites.get(type)
+      const { cell, cellWidth } = layout
+      const surface = options.createTileSurface(Math.ceil(cellWidth * density), Math.ceil((cell + 2) * density))
+      const spriteContext = surface?.getContext('2d')
+      if (!spriteContext) {
+        tileSprites.set(type, null)
+        return null
+      }
+      const main = ctx
+      ctx = spriteContext
+      try {
+        ctx.setTransform(surface.width / cellWidth, 0, 0, surface.height / (cell + 2), 0, 0)
+        paintTile(type, 0, 0)
+      } finally {
+        ctx = main
+      }
+      tileSprites.set(type, surface)
+      return surface
+    }
+
+    function tile(type, x, y, selectedTile, focused, pose) {
+      const { cell, cellWidth } = layout
+      const sprite = tileSprite(type)
+      const faceHeight = cell * 0.88
+      const transformed = pose || selectedTile || focused
+      if (transformed) ctx.save()
+      if (pose) {
+        ctx.translate(x + cellWidth / 2, y + cell / 2)
+        ctx.scale(pose.scale, pose.scale)
+        ctx.translate(-x - cellWidth / 2, -y - cell / 2)
+        ctx.globalAlpha = pose.alpha ?? 1
+      }
+      if (selectedTile) y += cell * 0.05
+      if (sprite) ctx.drawImage(sprite, x, y, cellWidth, cell + 2)
+      else paintTile(type, x, y)
+      if (pose?.flash) {
+        ctx.globalAlpha = pose.flash
+        box(x + 2, y + 2, cellWidth - 4, faceHeight - 4, cell * 0.21, '#fff8df')
+        oval(x + cellWidth / 2, y + faceHeight / 2, cell * 0.12, cell * 0.08, '#fffdf4')
+        ctx.globalAlpha = pose.alpha
+      }
       if (selectedTile || focused) {
-        round(x + 1, top + 1, cellWidth - 2, faceHeight - 2, radius - 1)
+        round(x + 1, y + 1, cellWidth - 2, faceHeight - 2, cell * 0.22)
         ctx.strokeStyle = selectedTile ? '#653e29' : INK
         ctx.lineWidth = 2.5
         ctx.stroke()
       }
-      ctx.restore()
+      if (transformed) ctx.restore()
     }
 
     function clearBurst(index, type, progress) {
@@ -513,15 +557,12 @@
       ctx.lineWidth = Math.max(1, size * 0.05 * (1 - progress))
       ctx.strokeStyle = color
       ctx.stroke()
-      for (let i = 0; i < 5; i++) {
-        const angle = i * 2 * Math.PI / 5 + index * 0.7
-        const radius = size * (0.22 + (0.45 + (i % 2) * 0.15) * progress)
-        const chipX = x + Math.cos(angle) * radius
-        const chipY = y + Math.sin(angle) * radius + size * 0.15 * progress ** 2
-        const chip = size * (0.055 + 0.035 * (1 - progress))
-        box(chipX - chip, chipY - chip, 2 * chip, 2 * chip, chip * 0.45, color)
-      }
       ctx.restore()
+    }
+
+    function prepareParticles(result) {
+      effects.prepareMatch(result.cleared, center, index => COLORS[result.swapped[index]][1], layout.cell,
+        result.longRuns.reduce((longest, run) => Math.max(longest, run.length), 3))
     }
 
     function longBurst({ first, last, length }, type, progress, showCount) {
@@ -534,7 +575,7 @@
       ctx.save()
       ctx.lineCap = 'round'
       ctx.globalAlpha = 1 - clamp((progress - 0.42) / 0.58)
-      line(points, COLORS[type][1], size * (strong ? 0.54 : 0.32))
+      if (!effects.lowDetail) line(points, COLORS[type][1], size * (strong ? 0.54 : 0.32))
       line(points, strong ? '#ffe9a2' : '#fffbec', size * (strong ? 0.22 : 0.12))
       if (showCount) {
         const minX = layout.panelLeft + 38
@@ -619,13 +660,15 @@
         const row = Math.floor(i / cols)
         let x = left + i % cols * pitchX
         let y = top + row * pitch
-        if (phase.swap?.includes(i)) {
-          const other = phase.swap.find(index => index !== i)
-          x += (other % cols - i % cols) * pitchX * phase.t
-          y += (Math.floor(other / cols) - row) * pitch * phase.t
+        let pose
+        if (phase.swap && (i === phase.swap[0] || i === phase.swap[1])) {
+          const other = i === phase.swap[0] ? phase.swap[1] : phase.swap[0]
+          x += (other % cols - i % cols) * pitchX * phase.swapPose.t
+          y += (Math.floor(other / cols) - row) * pitch * phase.swapPose.t
+          pose = phase.swapPose
         }
-        tile(entries[i], x, y, i === selected, i === focus,
-          phase.cleared?.has(i) ? phase.t : 0)
+        if (phase.matchPose && phase.result.cleared.has(i)) pose = phase.matchPose
+        tile(entries[i], x, y, i === selected, i === focus, pose)
       }
       if (guided && !intro && !animation && !state.outcome) {
         for (const index of openingMove) {
@@ -644,7 +687,10 @@
         ctx.stroke()
       }
       if (phase.burst !== undefined) {
-        for (const index of phase.result.cleared) clearBurst(index, phase.result.swapped[index], phase.burst)
+        if (!effects.lowDetail && phase.result.cleared.size <= 12) {
+          for (const index of phase.result.cleared) clearBurst(index, phase.result.swapped[index], phase.burst)
+        }
+        effects.drawParticles(ctx, phase.burst)
       }
       if (phase.longBurst !== undefined) {
         const runs = phase.result.longRuns
@@ -670,17 +716,16 @@
       const ports = exits ? exits.map(col => (rows - 1) * cols + col) : outlets(route, state.level)
       for (const index of ports) {
         const [x, y] = center(index)
-        const mouth = y + cell / 2 + 2
+        const mouth = y + cell / 2
         const limit = closeAt?.[index % cols]
         const closed = limit !== undefined && water >= limit
         const warning = limit !== undefined && water === limit - 1
         const active = !closed && wet.get(index)?.amount === 1
-        box(x - 11, mouth - 4, 22, 7, 3,
-          active ? '#74d8ba' : closed ? DRY_SLOT : warning ? '#df8b69' : '#dbad54', INK)
-        if (closeAt) {
-          label(closed ? '已关' : limit ?? '常开', x, mouth + 11, 10,
-            warning ? DANGER : INK, 700, 'center')
-        }
+        const fill = active ? '#95ddc2' : closed ? DRY_SLOT : warning ? '#f1ae8d' : '#f5cf79'
+        const caption = closed ? '已关' : limit !== undefined ? `${limit} 关闸` : closeAt ? '常开' : '出口'
+        box(x - 5, mouth - 3, 10, 7, 2, fill, INK)
+        box(x - 22, mouth + 2, 44, 18, 5, fill, INK)
+        label(caption, x, mouth + 11, 11, closed ? PANEL : INK, 700, 'center')
         if (active && pumpProgress !== undefined) {
           ctx.save()
           ctx.globalAlpha = 1 - pumpProgress
@@ -736,17 +781,10 @@
       }
       if (animation) {
         const age = Math.max(0, now - animation.from)
-        let elapsed = age
-        for (const part of animation.parts) {
-          if (elapsed < part.duration) {
-            phase = { ...part, t: ease(elapsed / part.duration) }
-            break
-          }
-          elapsed -= part.duration
-        }
-        const { result, arrivals, flowSteps, channelMs, flowAt, flowDuration, rescueAt, end } = animation
+        const { swap, result, arrivals, flowSteps, channelMs, flowAt, flowDuration, rescueAt, end } = animation
         if (age >= end) {
           animation = null
+          effects.clearEffects()
           if (result) {
             finish(result.state.outcome === 'escaped' ? result.state : { ...result.state, water: state.water })
             view = state
@@ -754,16 +792,22 @@
           const swipe = queuedSwipe
           queuedSwipe = null
           if (swipe && !state.outcome) move(...swipe)
-        } else if (result) {
-          if (age >= SWAP_MS) {
-            phase.board ||= result.state.board
-            phase.result = result
-            const burstAge = age - SWAP_MS
-            if (burstAge < BURST_MS) phase.burst = ease(burstAge / BURST_MS)
-            if (result.longRuns.length && burstAge < LONG_BURST_MS) phase.longBurst = burstAge / LONG_BURST_MS
-            phase.arrivals = arrivals
-            phase.waterFront = clamp((burstAge - CLEAR_MS) / channelMs) * flowSteps
+        } else if (age < SWAP_MS || !result) {
+          phase = { swap, swapPose: swapPose(age, Boolean(result)) }
+        } else {
+          const matchAge = age - SWAP_MS
+          const clearAge = matchAge - MATCH_MS
+          const clearing = clearAge >= 0
+          const tilesVisible = clearAge < CLEAR_MS
+          phase.board = tilesVisible ? result.swapped : result.state.board
+          phase.result = result
+          if (tilesVisible) phase.matchPose = matchPose(matchAge)
+          if (clearing) {
+            if (tilesVisible) phase.burst = clearAge / CLEAR_MS
+            if (result.longRuns.length && clearAge < LINE_MS) phase.longBurst = clearAge / LINE_MS
           }
+          phase.arrivals = arrivals
+          phase.waterFront = clamp((clearAge - CLEAR_MS / 2) / channelMs) * flowSteps
           if (flowDuration && age >= flowAt) {
             progress = ease(clamp((age - flowAt) / flowDuration))
             phase.pumping = progress < 1
@@ -836,6 +880,7 @@
       state = openings[levelIndex]
       layout = boardLayout(state.level)
       animation = null
+      effects.clearEffects()
       queuedSwipe = null
       selected = -1
       focus = -1
@@ -857,7 +902,10 @@
         return
       }
       const result = play(state, a, b)
-      if (result) guided = false
+      if (result && guided) {
+        guided = false
+        message = '把水引到标出的排水口。'
+      }
       const earnedMs = (result?.state.bonusMs ?? 0) - (state.bonusMs ?? 0)
       const combo = result?.longRuns.reduce((longest, run) => Math.max(longest, run.length), 0)
       const feedback = [
@@ -885,8 +933,8 @@
         return
       }
       if (feedback) announce(feedback)
-      const parts = [{ swap: [a, b], duration: SWAP_MS }]
-      let end = SWAP_MS * 2
+      const swap = [a, b]
+      let end = SWAP_MS + RETURN_MS
       let flowAt = SWAP_MS
       let flowDuration = 0
       let rescueAt
@@ -894,6 +942,7 @@
       let flowSteps = 0
       let channelMs = 90
       if (result) {
+        prepareParticles(result)
         const alreadyWet = new Set(state.route.map(({ cell }) => cell))
         arrivals = new Map()
         for (const { cell, from } of result.state.route) {
@@ -901,23 +950,17 @@
           arrivals.set(cell, step)
           flowSteps = Math.max(flowSteps, step + 1)
         }
-        parts.push({ board: result.swapped, cleared: result.cleared, duration: CLEAR_MS })
         channelMs = Math.min(310, Math.max(90, flowSteps * 23))
-        end = SWAP_MS + (flowSteps ? CLEAR_MS + channelMs : BURST_MS)
-        if (result.longRuns.length) end = Math.max(end, SWAP_MS + LONG_BURST_MS)
+        end = SWAP_MS + MATCH_MS + Math.max(CLEAR_MS, flowSteps ? CLEAR_MS / 2 + channelMs : 0,
+          result.longRuns.length ? LINE_MS : 0)
         if (result.state.outcome === 'escaped') {
           flowAt = end
           flowDuration = 275
           rescueAt = flowAt + 175
           end = rescueAt + 245
         }
-      } else {
-        const reversed = state.board.slice()
-        reversed[a] = state.board[b]
-        reversed[b] = state.board[a]
-        parts.push({ board: reversed, swap: [a, b], duration: SWAP_MS })
       }
-      animation = { from: now, parts, result, arrivals, flowSteps, channelMs, end, flowAt, flowDuration, rescueAt }
+      animation = { from: now, swap, result, arrivals, flowSteps, channelMs, end, flowAt, flowDuration, rescueAt }
       schedule()
     }
 

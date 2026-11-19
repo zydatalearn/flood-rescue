@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const { test } = require('node:test')
 const { deal, presets, advanceWater, play, matches, outlets, levelCount, floodTime } = require('./puzzle.js')
 const { mount } = require('./scene.js')
+const { createEffects, matchPose, swapPose, SWAP_MS, RETURN_MS, MATCH_MS, CLEAR_MS } = require('./effects.js')
 
 const start = (index = 0) => presets(index)[0].state
 const starterPath = presets(0)[0].paths[0]
@@ -91,6 +92,30 @@ test('elapsed seconds set the water level and give the rescue exactly 55 seconds
   }
 })
 
+test('effect poses settle and particle counts stay bounded on slow frames', () => {
+  assert.equal(swapPose(0, true).t, 0)
+  assert.equal(swapPose(SWAP_MS, false).t, 1)
+  assert.equal(swapPose(SWAP_MS + RETURN_MS, false).t, 0)
+  assert.equal(matchPose(MATCH_MS + CLEAR_MS).alpha, 0)
+  const effects = createEffects()
+  const cleared = new Set(Array.from({ length: 12 }, (_, index) => index))
+  let count = 0
+  const context = { save() {}, restore() {}, fillRect() { count++ } }
+  const prepare = () => effects.prepareMatch(cleared, i => [i, i], () => '#c80', 30, 4)
+  prepare()
+  effects.drawParticles(context, 0.5)
+  assert.equal(count, 72)
+  for (let i = 0; i < 4; i++) effects.observeFrame(23)
+  assert.equal(effects.lowDetail, true)
+  count = 0
+  prepare()
+  effects.drawParticles(context, 0.5)
+  assert.equal(count, 24)
+  effects.clearEffects()
+  effects.drawParticles(context, 0.5)
+  assert.equal(count, 24)
+})
+
 test('the scene queues swipes, advances the endless run, and pauses in the background', t => {
   let now = 1000
   t.mock.method(Date, 'now', () => now)
@@ -126,7 +151,8 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
     game.down(...coordinates(from))
     game.up(...coordinates(to))
   }
-  const moves = deal(0, () => 0).paths[0]
+  const opening = deal(0, () => 0)
+  const moves = opening.paths[0]
   tick(0)
   assert.ok(labels.includes('怎么玩'))
   now += 60000
@@ -134,28 +160,44 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   assert.equal(frames.length, 0)
   game.setActive(false)
   game.setActive(true)
-  assert.equal(frames.length, 0)
+  tick(0)
+  assert.ok(labels.includes('怎么玩'))
   game.down(195, 486)
   game.up(195, 486)
   labels.length = 0
   tick(0)
   assert.ok(labels.includes('00:55'))
+  assert.ok(labels.includes('出口'))
   assert.ok(!labels.includes('怎么玩'))
   assert.match(announcements.at(-1), /交换描边/)
   announcements.length = 0
+  const badSwap = opening.state.board.findIndex((tile, i, board) =>
+    i % 7 < 6 && tile !== board[i + 1] && !play(opening.state, i, i + 1))
+  swipe([badSwap, badSwap + 1])
+  tick(170)
+  assert.match(announcements.at(-1), /无法连成三个/)
+  tick(150)
+  assert.equal(frames.length, 0)
+  announcements.length = 0
   swipe(moves[0])
-  tick(145)
-  assert.equal(burstRings, 3)
-  swipe(moves[1])
-  tick(95)
-  assert.match(announcements[0], /流进棋盘.*水位 1/)
   tick(250)
+  assert.equal(burstRings, 3)
+  game.setActive(false)
+  tick(3000)
+  assert.equal(frames.length, 0)
+  assert.equal(announcements.length, 0)
+  game.setActive(true)
+  tick(0)
+  swipe(moves[1])
+  tick(150)
+  assert.match(announcements[0], /流进棋盘.*水位 1/)
+  tick(400)
   assert.match(announcements[1], /流进棋盘.*水位 1/)
   swipe(moves[2])
-  tick(250)
+  tick(400)
   assert.match(announcements[2], /流进棋盘.*水位 1/)
   swipe(moves[3])
-  tick(700)
+  tick(900)
   assert.match(announcements[3], /脱险.*水位 0/)
   assert.equal(frames.length, 0)
 
@@ -163,12 +205,13 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   game.resize(500, 806, 1)
   tick(0)
   assert.match(announcements.at(-1), /无限救援第 1 轮/)
+  assert.ok(labels.includes('常开'))
   const firstRound = deal(1, () => 0, undefined, 1)
   for (const [from, to] of firstRound.paths[0]) {
     const coordinates = index => [56.5 + index % 10 * 43, 308 + Math.floor(index / 10) * 31]
     game.down(...coordinates(from))
     game.up(...coordinates(to))
-    tick(650)
+    tick(700)
   }
   assert.ok(announcements.some(message => /水路加时 2 秒/.test(message)))
   if (!/已救援 1 轮/.test(announcements.at(-1))) tick(4000)

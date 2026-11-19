@@ -6,6 +6,14 @@ const safeBottom = safeArea ? Math.max(0, windowHeight - safeArea.bottom) : 0
 const game = mount(canvas, {
   width: windowWidth, height: windowHeight, pixelRatio, safeTop, safeBottom,
   requestFrame: callback => requestAnimationFrame(callback),
+  createTileSurface: (width, height) => {
+    if (!wx.createOffscreenCanvas) return null
+    try {
+      return wx.createOffscreenCanvas({ type: '2d', width, height })
+    } catch {
+      return null
+    }
+  },
 })
 
 wx.onHide(() => game.setActive(false))

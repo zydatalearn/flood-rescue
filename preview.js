@@ -4,6 +4,8 @@ const motion = matchMedia('(prefers-reduced-motion: reduce)')
 const game = RescueScene.mount(canvas, {
   width: canvas.clientWidth, height: canvas.clientHeight, pixelRatio: devicePixelRatio,
   requestFrame: requestAnimationFrame.bind(window),
+  lowDetail: navigator.deviceMemory <= 4 || navigator.hardwareConcurrency <= 4,
+  createTileSurface: (width, height) => Object.assign(document.createElement('canvas'), { width, height }),
   reducedMotion: () => motion.matches,
   announce: message => { status.textContent = message },
 })
@@ -11,16 +13,21 @@ const game = RescueScene.mount(canvas, {
 new ResizeObserver(() => game.resize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio)).observe(canvas)
 document.addEventListener('visibilitychange', () => game.setActive(!document.hidden))
 game.setActive(!document.hidden)
+let pointerBounds
 canvas.addEventListener('pointerdown', event => {
   if (!event.isPrimary || event.button !== 0) return
   canvas.setPointerCapture(event.pointerId)
-  const rect = canvas.getBoundingClientRect()
-  game.down(event.clientX - rect.left, event.clientY - rect.top)
+  pointerBounds = canvas.getBoundingClientRect()
+  game.down(event.clientX - pointerBounds.left, event.clientY - pointerBounds.top)
 })
 canvas.addEventListener('pointerup', event => {
-  if (!event.isPrimary) return
-  const rect = canvas.getBoundingClientRect()
-  game.up(event.clientX - rect.left, event.clientY - rect.top)
+  if (!event.isPrimary || !pointerBounds) return
+  game.up(event.clientX - pointerBounds.left, event.clientY - pointerBounds.top)
+  pointerBounds = null
 })
-canvas.addEventListener('pointercancel', event => { if (event.isPrimary) game.cancel() })
+canvas.addEventListener('lostpointercapture', event => {
+  if (!event.isPrimary || !pointerBounds) return
+  pointerBounds = null
+  game.cancel()
+})
 canvas.addEventListener('keydown', event => { if (game.key(event.key)) event.preventDefault() })
