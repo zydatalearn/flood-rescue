@@ -47,7 +47,7 @@
     const openings = []
     pickOpening()
     let state = openings[levelIndex]
-    let layout = boardLayout(state.level)
+    let layout
     let animation = null
     let queuedSwipe = null
     let pressed = null
@@ -131,15 +131,21 @@
 
     function boardLayout({ cols, rows }) {
       const top = rows > 9 ? 294 : 337
-      const pitch = Math.min(Math.floor((WIDTH - 2 * BOARD_INSET - 12) / cols), Math.floor((763 - top) / rows))
-      const cell = pitch - (rows > 12 ? 2 : 4)
-      return { top, pitch, cell, left: Math.floor((WIDTH - (cols - 1) * pitch - cell) / 2) }
+      const panelWidth = Math.min(width / scale, WIDTH + 76) - 2 * BOARD_INSET
+      const panelLeft = (WIDTH - panelWidth) / 2
+      const pitch = Math.floor((763 - top) / rows)
+      const pitchX = Math.min(Math.floor((panelWidth - 18) / cols), Math.floor(pitch * 1.4))
+      const gap = rows > 12 ? 2 : 4
+      const cell = pitch - gap
+      const cellWidth = pitchX - gap
+      const left = (WIDTH - (cols - 1) * pitchX - cellWidth) / 2
+      return { top, pitch, pitchX, cell, cellWidth, left, panelLeft, panelWidth }
     }
 
     function center(index) {
-      const { left, top, pitch, cell } = layout
+      const { left, top, pitch, pitchX, cell, cellWidth } = layout
       const { cols } = state.level
-      return [left + (index % cols) * pitch + cell / 2, top + Math.floor(index / cols) * pitch + cell / 2]
+      return [left + (index % cols) * pitchX + cellWidth / 2, top + Math.floor(index / cols) * pitch + cell / 2]
     }
 
     function sceneY(y) {
@@ -156,6 +162,7 @@
       scale = Math.max(0.01, Math.min(width / WIDTH, usableHeight / HEIGHT, 1.25))
       offsetX = (width - WIDTH * scale) / 2
       offsetY = safeTop + (usableHeight - HEIGHT * scale) / 2
+      layout = boardLayout(state.level)
       schedule()
     }
 
@@ -460,34 +467,34 @@
 
     function tile(type, x, y, selectedTile, focused, clearProgress = 0) {
       const [bright, middle, edge] = COLORS[type]
-      const { cell } = layout
+      const { cell, cellWidth } = layout
       ctx.save()
       if (clearProgress) {
-        ctx.translate(x + cell / 2, y + cell / 2)
+        ctx.translate(x + cellWidth / 2, y + cell / 2)
         const size = 1 - clearProgress * 0.5
         ctx.scale(size, size)
-        ctx.translate(-x - cell / 2, -y - cell / 2)
+        ctx.translate(-x - cellWidth / 2, -y - cell / 2)
         ctx.globalAlpha = 1 - clearProgress
       }
       const radius = cell * 0.25
       const depth = cell * 0.13
       const top = y + (selectedTile ? depth * 0.72 : 0)
       const faceHeight = cell - depth
-      box(x, y + 1.5, cell, cell, radius, '#294a3e38')
-      box(x, y + depth, cell, faceHeight, radius, edge + 'a6')
-      box(x, top, cell, faceHeight, radius, ramp(top, faceHeight, bright, middle))
+      box(x, y + 1.5, cellWidth, cell, radius, '#294a3e38')
+      box(x, y + depth, cellWidth, faceHeight, radius, edge + 'a6')
+      box(x, top, cellWidth, faceHeight, radius, ramp(top, faceHeight, bright, middle))
       // A curved rim catches the light on the upper-left shoulder of the key.
       ctx.beginPath()
       ctx.moveTo(x + 2, top + radius + 1)
       ctx.quadraticCurveTo(x + 2, top + 2, x + radius + 1, top + 2)
-      ctx.lineTo(x + cell * 0.62, top + 2)
+      ctx.lineTo(x + cellWidth * 0.62, top + 2)
       ctx.lineWidth = 1.5
       ctx.strokeStyle = '#fffaf1a8'
       ctx.stroke()
       const iconSize = Math.min(0.98, cell / 40)
-      symbol(type, x + cell / 2, top + faceHeight / 2 + 0.8, iconSize, edge)
+      symbol(type, x + cellWidth / 2, top + faceHeight / 2 + 0.8, iconSize, edge)
       if (selectedTile || focused) {
-        round(x + 1, top + 1, cell - 2, faceHeight - 2, radius - 1)
+        round(x + 1, top + 1, cellWidth - 2, faceHeight - 2, radius - 1)
         ctx.strokeStyle = selectedTile ? '#653e29' : INK
         ctx.lineWidth = 2.5
         ctx.stroke()
@@ -530,7 +537,9 @@
       line(points, COLORS[type][1], size * (strong ? 0.54 : 0.32))
       line(points, strong ? '#ffe9a2' : '#fffbec', size * (strong ? 0.22 : 0.12))
       if (showCount) {
-        const midX = Math.min(323, Math.max(67, (x + endX) / 2))
+        const minX = layout.panelLeft + 38
+        const maxX = layout.panelLeft + layout.panelWidth - 38
+        const midX = Math.min(maxX, Math.max(minX, (x + endX) / 2))
         const midY = Math.max(layout.top + 13, (y + endY) / 2 - size * 0.6)
         box(midX - 32, midY - 10, 64, 20, 9, strong ? '#ffeaab' : PANEL, COLORS[type][2])
         label(`${length} 连消`, midX, midY, 12, INK, 700, 'center')
@@ -540,8 +549,8 @@
 
     function board(phase) {
       const { cols, entry } = state.level
-      const { left, top, pitch, cell } = layout
-      box(BOARD_INSET, top - 13, WIDTH - 2 * BOARD_INSET, 783 - top, 18, BOARD, '#8fa99b')
+      const { left, top, pitch, pitchX, cell, cellWidth, panelLeft, panelWidth } = layout
+      box(panelLeft, top - 13, panelWidth, 783 - top, 18, BOARD, '#8fa99b')
       const entries = phase.board || state.board
       const ground = phase.result?.state.board || state.board
       const route = phase.result?.state.route || state.route
@@ -555,7 +564,7 @@
       for (let i = 0; i < ground.length; i++) {
         if (ground[i] !== null) continue
         const [x, y] = center(i)
-        box(x - cell / 2, y - cell / 2, cell, cell + 1, 7, DRY_SLOT)
+        box(x - cellWidth / 2, y - cell / 2, cellWidth, cell + 1, 7, DRY_SLOT)
       }
       for (let i = 0; i < ground.length; i++) {
         if (ground[i] !== null) continue
@@ -565,8 +574,8 @@
           const [nx, ny] = center(neighbor)
           const joined = wet.get(i)?.amount === 1 && wet.get(neighbor)?.amount === 1
           ctx.fillStyle = joined ? WATER : DRY_SLOT
-          if (nx > x) ctx.fillRect(x + cell / 2 - 4, y - cell * 0.34, pitch - cell + 8, cell * 0.68)
-          else ctx.fillRect(x - cell * 0.34, y + cell / 2 - 4, cell * 0.68, pitch - cell + 8)
+          if (nx > x) ctx.fillRect(x + cellWidth / 2 - 4, y - cell * 0.34, pitchX - cellWidth + 8, cell * 0.68)
+          else ctx.fillRect(x - cellWidth * 0.34, y + cell / 2 - 4, cellWidth * 0.68, pitch - cell + 8)
         }
       }
 
@@ -575,20 +584,21 @@
         const [x, y] = center(index)
         const [fx] = from < 0 ? [x] : center(from)
         const size = cell - 4
-        const startX = x - size / 2
+        const wetWidth = cellWidth - 4
+        const startX = x - wetWidth / 2
         const startY = y - size / 2
         ctx.save()
-        round(startX, startY, size, size, 6)
+        round(startX, startY, wetWidth, size, 6)
         ctx.clip()
         ctx.fillStyle = ramp(startY, size, '#81dfcc', WATER)
-        const filled = size * amount
-        const leadingX = fx < x ? startX + filled : startX + size - filled
-        if (fx === x) ctx.fillRect(startX, startY, size, filled)
+        const filled = (fx === x ? size : wetWidth) * amount
+        const leadingX = fx < x ? startX + filled : startX + wetWidth - filled
+        if (fx === x) ctx.fillRect(startX, startY, wetWidth, filled)
         else ctx.fillRect(fx < x ? startX : leadingX, startY, filled, size)
         if (amount < 1) {
           ctx.fillStyle = '#dcfff2'
           const crest = Math.min(3, filled)
-          if (fx === x) ctx.fillRect(startX, startY + filled - crest, size, crest)
+          if (fx === x) ctx.fillRect(startX, startY + filled - crest, wetWidth, crest)
           else ctx.fillRect(fx < x ? leadingX - crest : leadingX, startY, crest, size)
         }
         if (amount === 1) {
@@ -602,16 +612,16 @@
       }
 
       ctx.save()
-      round(BOARD_INSET + 5, top - 6, WIDTH - 2 * (BOARD_INSET + 5), 769 - top, 11)
+      round(panelLeft + 5, top - 6, panelWidth - 10, 769 - top, 11)
       ctx.clip()
       for (let i = 0; i < entries.length; i++) {
         if (!entries[i]) continue
         const row = Math.floor(i / cols)
-        let x = left + i % cols * pitch
+        let x = left + i % cols * pitchX
         let y = top + row * pitch
         if (phase.swap?.includes(i)) {
           const other = phase.swap.find(index => index !== i)
-          x += (other % cols - i % cols) * pitch * phase.t
+          x += (other % cols - i % cols) * pitchX * phase.t
           y += (Math.floor(other / cols) - row) * pitch * phase.t
         }
         tile(entries[i], x, y, i === selected, i === focus,
@@ -620,7 +630,7 @@
       if (guided && !intro && !animation && !state.outcome) {
         for (const index of openingMove) {
           const [x, y] = center(index)
-          round(x - cell / 2 + 2, y - cell / 2 + 2, cell - 4, cell - 4, 9)
+          round(x - cellWidth / 2 + 2, y - cell / 2 + 2, cellWidth - 4, cell - 4, 9)
           ctx.strokeStyle = '#ffed9b'
           ctx.lineWidth = 3
           ctx.stroke()
@@ -628,7 +638,7 @@
       }
       if (focus >= 0 && !ground[focus]) {
         const [x, y] = center(focus)
-        round(x - cell / 2 + 2, y - cell / 2 + 2, cell - 4, cell - 4, 7)
+        round(x - cellWidth / 2 + 2, y - cell / 2 + 2, cellWidth - 4, cell - 4, 7)
         ctx.strokeStyle = '#ffffff'
         ctx.lineWidth = 2
         ctx.stroke()
@@ -791,18 +801,18 @@
       label(status, WIDTH / 2, 789, 13, statusColor, 600, 'center')
 
       if (intro) {
-        box(0, 0, WIDTH, HEIGHT, 0, '#24443e85')
+        box(-offsetX / scale, 0, width / scale, HEIGHT, 0, '#24443e85')
         box(25, 267, 340, 272, 20, PANEL, PANEL_EDGE)
         label('怎么玩', WIDTH / 2, 306, 24, INK, 700, 'center')
         label('滑动或点选相邻方块，凑成三个同色。', 48, 353, 14, INK)
         label('消开的格子会留下水路。', 48, 386, 14, INK)
         label('水涨满前，接通底边的金色排水口。', 48, 419, 14, INK)
-        const { x, y, width, height } = START_BUTTON
-        box(x, y, width, height, 12, '#edc67f')
-        label('开始救援', WIDTH / 2, y + height / 2, 16, INK, 700, 'center')
+        const { x, y, width: buttonWidth, height: buttonHeight } = START_BUTTON
+        box(x, y, buttonWidth, buttonHeight, 12, '#edc67f')
+        label('开始救援', WIDTH / 2, y + buttonHeight / 2, 16, INK, 700, 'center')
       } else if (state.outcome) {
         const won = state.outcome === 'escaped'
-        box(BOARD_INSET, layout.top - 13, WIDTH - 2 * BOARD_INSET, 783 - layout.top, 18, '#24443e9c')
+        box(layout.panelLeft, layout.top - 13, layout.panelWidth, 783 - layout.top, 18, '#24443e9c')
         box(55, 512, 280, 145, 18, PANEL, PANEL_EDGE)
         const heading = state.outcome === 'flooded' ? '小狗被淹没了' : '救援中止'
         label(won ? '救援成功' : heading, WIDTH / 2, 549, 24, INK, 700, 'center')
@@ -937,9 +947,9 @@
     }
 
     function cellAt({ x, y }) {
-      const { left, top, pitch } = layout
+      const { left, top, pitch, pitchX } = layout
       const { cols, rows } = state.level
-      const col = Math.floor((x - left + 2) / pitch)
+      const col = Math.floor((x - left + 2) / pitchX)
       const row = Math.floor((y - top + 2) / pitch)
       return col >= 0 && col < cols && row >= 0 && row < rows ? row * cols + col : -1
     }

@@ -160,11 +160,12 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   assert.equal(frames.length, 0)
 
   game.key('Enter')
+  game.resize(500, 806, 1)
   tick(0)
   assert.match(announcements.at(-1), /无限救援第 1 轮/)
   const firstRound = deal(1, () => 0, undefined, 1)
   for (const [from, to] of firstRound.paths[0]) {
-    const coordinates = index => [55 + index % 10 * 31, 308 + Math.floor(index / 10) * 31]
+    const coordinates = index => [56.5 + index % 10 * 43, 308 + Math.floor(index / 10) * 31]
     game.down(...coordinates(from))
     game.up(...coordinates(to))
     tick(650)
