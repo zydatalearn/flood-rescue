@@ -3,6 +3,8 @@
   const { MAX_WATER, floodTime, deal, adjacent, advanceWater, play, outlets } = puzzle
   const WIDTH = 390
   const HEIGHT = 806
+  const BOARD_INSET = 9
+  const START_BUTTON = { x: 99, y: 462, width: 192, height: 48 }
   const SWAP_MS = 68
   const CLEAR_MS = 80
   const BURST_MS = 155
@@ -39,6 +41,9 @@
     let roundNumber = 0
     let nextRoundAt = null
     let active = true
+    let intro = true
+    let guided = true
+    let openingMove
     const openings = []
     pickOpening()
     let state = openings[levelIndex]
@@ -48,10 +53,10 @@
     let pressed = null
     let selected = -1
     let focus = -1
-    let message = '连成三个，把水绕到金色排水口。'
+    let message = '交换描边的两块，接通第一段水路。'
     let bonusNotice = null
     let framePending = false
-    let clockSince = Date.now()
+    let clockSince = null
     let playedMs = 0
     let clockTimer
     let rise
@@ -111,7 +116,7 @@
         updateWater(now)
         pauseClock(now)
         pressed = null
-      } else if (clockSince === null && !state.outcome && !animation?.result?.state.outcome) {
+      } else if (!intro && clockSince === null && !state.outcome && !animation?.result?.state.outcome) {
         clockSince = now
         schedule()
       }
@@ -119,12 +124,14 @@
     }
 
     function pickOpening() {
-      openings[levelIndex] = deal(levelIndex, random, openings[levelIndex], roundNumber).state
+      const opening = deal(levelIndex, random, openings[levelIndex], roundNumber)
+      openings[levelIndex] = opening.state
+      if (levelIndex === 0) openingMove = opening.paths[0][0]
     }
 
     function boardLayout({ cols, rows }) {
-      const top = rows > 9 ? 339 : 367
-      const pitch = Math.min(Math.floor(336 / cols), Math.floor((763 - top) / rows))
+      const top = rows > 9 ? 294 : 337
+      const pitch = Math.min(Math.floor((WIDTH - 2 * BOARD_INSET - 12) / cols), Math.floor((763 - top) / rows))
       const cell = pitch - (rows > 12 ? 2 : 4)
       return { top, pitch, cell, left: Math.floor((WIDTH - (cols - 1) * pitch - cell) / 2) }
     }
@@ -304,7 +311,7 @@
     function dog(x, y, safe) {
       ctx.save()
       ctx.translate(x, y)
-      // Keep the portrait round in the shorter second-level panorama.
+      // Preserve the portrait proportions as the panorama changes height.
       ctx.scale(0.92, 0.92 * 277 / (277 + layout.top - 429))
       const fur = ramp(-24, 52, '#f6c483', '#c67b4b')
       const cream = '#fff1d5'
@@ -534,7 +541,7 @@
     function board(phase) {
       const { cols, entry } = state.level
       const { left, top, pitch, cell } = layout
-      box(17, top - 13, 356, 783 - top, 18, BOARD, '#8fa99b')
+      box(BOARD_INSET, top - 13, WIDTH - 2 * BOARD_INSET, 783 - top, 18, BOARD, '#8fa99b')
       const entries = phase.board || state.board
       const ground = phase.result?.state.board || state.board
       const route = phase.result?.state.route || state.route
@@ -595,7 +602,7 @@
       }
 
       ctx.save()
-      round(24, top - 6, 342, 769 - top, 11)
+      round(BOARD_INSET + 5, top - 6, WIDTH - 2 * (BOARD_INSET + 5), 769 - top, 11)
       ctx.clip()
       for (let i = 0; i < entries.length; i++) {
         if (!entries[i]) continue
@@ -609,6 +616,15 @@
         }
         tile(entries[i], x, y, i === selected, i === focus,
           phase.cleared?.has(i) ? phase.t : 0)
+      }
+      if (guided && !intro && !animation && !state.outcome) {
+        for (const index of openingMove) {
+          const [x, y] = center(index)
+          round(x - cell / 2 + 2, y - cell / 2 + 2, cell - 4, cell - 4, 9)
+          ctx.strokeStyle = '#ffed9b'
+          ctx.lineWidth = 3
+          ctx.stroke()
+        }
       }
       if (focus >= 0 && !ground[focus]) {
         const [x, y] = center(focus)
@@ -774,9 +790,19 @@
       }
       label(status, WIDTH / 2, 789, 13, statusColor, 600, 'center')
 
-      if (state.outcome) {
+      if (intro) {
+        box(0, 0, WIDTH, HEIGHT, 0, '#24443e85')
+        box(25, 267, 340, 272, 20, PANEL, PANEL_EDGE)
+        label('怎么玩', WIDTH / 2, 306, 24, INK, 700, 'center')
+        label('滑动或点选相邻方块，凑成三个同色。', 48, 353, 14, INK)
+        label('消开的格子会留下水路。', 48, 386, 14, INK)
+        label('水涨满前，接通底边的金色排水口。', 48, 419, 14, INK)
+        const { x, y, width, height } = START_BUTTON
+        box(x, y, width, height, 12, '#edc67f')
+        label('开始救援', WIDTH / 2, y + height / 2, 16, INK, 700, 'center')
+      } else if (state.outcome) {
         const won = state.outcome === 'escaped'
-        box(17, layout.top - 13, 356, 783 - layout.top, 18, '#24443e9c')
+        box(BOARD_INSET, layout.top - 13, WIDTH - 2 * BOARD_INSET, 783 - layout.top, 18, '#24443e9c')
         box(55, 512, 280, 145, 18, PANEL, PANEL_EDGE)
         const heading = state.outcome === 'flooded' ? '小狗被淹没了' : '救援中止'
         label(won ? '救援成功' : heading, WIDTH / 2, 549, 24, INK, 700, 'center')
@@ -805,7 +831,8 @@
       focus = -1
       pressed = null
       bonusNotice = null
-      message = levelIndex === 0 ? '连成三个，把水绕到金色排水口。' : '每接通 6 格加 2 秒，常开口始终可用。'
+      message = guided ? '交换描边的两块，接通第一段水路。' : levelIndex === 0
+        ? '连成三个，把水绕到金色排水口。' : '每接通 6 格加 2 秒，常开口始终可用。'
       announce(roundNumber ? `无限救援第 ${roundNumber} 轮。${message}` : message)
       schedule()
     }
@@ -820,6 +847,7 @@
         return
       }
       const result = play(state, a, b)
+      if (result) guided = false
       const earnedMs = (result?.state.bonusMs ?? 0) - (state.bonusMs ?? 0)
       const combo = result?.longRuns.reduce((longest, run) => Math.max(longest, run.length), 0)
       const feedback = [
@@ -932,6 +960,13 @@
       pressed = point(x, y)
     }
 
+    function startRescue() {
+      intro = false
+      if (active) clockSince = Date.now()
+      announce(message)
+      schedule()
+    }
+
     function up(x, y) {
       if (!pressed) return
       const origin = pressed
@@ -940,6 +975,12 @@
       const target = point(x, y)
       const dx = target.x - origin.x
       const dy = target.y - origin.y
+      if (intro) {
+        const { x, y, width, height } = START_BUTTON
+        if (Math.hypot(dx, dy) < 14 && target.x >= x && target.x <= x + width &&
+          target.y >= y && target.y <= y + height) startRescue()
+        return
+      }
       if (Math.hypot(dx, dy) < 14) {
         const resetButton = origin.x >= 262 && origin.x <= 313 && origin.y >= 22 && origin.y <= 52
         const shuffleButton = origin.x >= 321 && origin.x <= 372 && origin.y >= 22 && origin.y <= 52
@@ -970,6 +1011,11 @@
     }
 
     function key(value) {
+      if (intro) {
+        if (value !== 'Enter' && value !== ' ') return false
+        startRescue()
+        return true
+      }
       if (nextRoundAt !== null) return value === 'Enter' || value.toLowerCase() === 'r'
       if (value === 'Enter' && state.outcome) {
         continueLevel()
@@ -992,6 +1038,7 @@
     }
 
     resize(options.width, options.height, options.pixelRatio)
+    announce('怎么玩。交换相邻方块，凑成三个同色，把水引到金色排水口。按回车开始救援。')
     return { down, up, cancel: () => { pressed = null }, resize, key, setActive }
   }
 

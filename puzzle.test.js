@@ -96,10 +96,12 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   t.mock.method(Date, 'now', () => now)
   const frames = []
   const announcements = []
+  const labels = []
   let burstRings = 0
   const context = new Proxy({}, {
     get: (_, key) => {
       if (key === 'createLinearGradient') return () => ({ addColorStop() {} })
+      if (key === 'fillText') return label => labels.push(String(label))
       if (key === 'arc') return (x, y) => {
         if (x > 0 && y > 350) burstRings++
       }
@@ -120,12 +122,27 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   }
 
   const swipe = ([from, to]) => {
-    const coordinates = index => [63 + index % 7 * 44, 387 + Math.floor(index / 7) * 44]
+    const coordinates = index => [53 + index % 7 * 47, 358 + Math.floor(index / 7) * 47]
     game.down(...coordinates(from))
     game.up(...coordinates(to))
   }
   const moves = deal(0, () => 0).paths[0]
   tick(0)
+  assert.ok(labels.includes('怎么玩'))
+  now += 60000
+  swipe(moves[0])
+  assert.equal(frames.length, 0)
+  game.setActive(false)
+  game.setActive(true)
+  assert.equal(frames.length, 0)
+  game.down(195, 486)
+  game.up(195, 486)
+  labels.length = 0
+  tick(0)
+  assert.ok(labels.includes('00:55'))
+  assert.ok(!labels.includes('怎么玩'))
+  assert.match(announcements.at(-1), /交换描边/)
+  announcements.length = 0
   swipe(moves[0])
   tick(145)
   assert.equal(burstRings, 3)
@@ -147,7 +164,7 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   assert.match(announcements.at(-1), /无限救援第 1 轮/)
   const firstRound = deal(1, () => 0, undefined, 1)
   for (const [from, to] of firstRound.paths[0]) {
-    const coordinates = index => [58 + index % 10 * 28, 352 + Math.floor(index / 10) * 28]
+    const coordinates = index => [55 + index % 10 * 31, 308 + Math.floor(index / 10) * 31]
     game.down(...coordinates(from))
     game.up(...coordinates(to))
     tick(650)
