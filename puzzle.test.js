@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict')
 const { test } = require('node:test')
-const { deal, presets, advanceWater, play, matches, outlets, levelCount, floodTime } = require('./puzzle.js')
+const { deal, presets, advanceWater, play, matches, outlets, levelCount, floodTime,
+  useTool, ROCK, PLATE, CRACKED, adjacent, suggest } = require('./puzzle.js')
+const { dailyDate, dailyRandom, recordStore, grade } = require('./challenge.js')
 const { mount } = require('./scene.js')
 const { createEffects, matchPose, swapPose, SWAP_MS, RETURN_MS, MATCH_MS, CLEAR_MS } = require('./effects.js')
 
@@ -14,7 +16,11 @@ function turn(state, from, to) {
   assert.equal(result.state.water, result.state.outcome === 'escaped' ? 0 : state.water)
   for (const [index, tile] of state.board.entries()) {
     if (result.cleared.has(index) || tile === null) assert.equal(result.state.board[index], null)
-    else if (index !== from && index !== to) assert.equal(result.state.board[index], tile)
+    else if (index !== from && index !== to) {
+      const hit = (tile === PLATE || tile === CRACKED) &&
+        [...result.cleared].some(cell => adjacent(cell, index, state.level))
+      assert.equal(result.state.board[index], hit ? (tile === PLATE ? CRACKED : null) : tile)
+    }
   }
   return result.state
 }
@@ -208,12 +214,12 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   assert.ok(labels.includes('常开'))
   const firstRound = deal(1, () => 0, undefined, 1)
   for (const [from, to] of firstRound.paths[0]) {
-    const coordinates = index => [56.5 + index % 10 * 43, 308 + Math.floor(index / 10) * 31]
+    const coordinates = index => [56.5 + index % 10 * 43, 283 + Math.floor(index / 10) * 30]
     game.down(...coordinates(from))
     game.up(...coordinates(to))
     tick(700)
   }
-  assert.ok(announcements.some(message => /水路加时 2 秒/.test(message)))
+  assert.ok(announcements.some(message => /加时 2 秒/.test(message)))
   if (!/已救援 1 轮/.test(announcements.at(-1))) tick(4000)
   assert.match(announcements.at(-1), /已救援 1 轮/)
   game.setActive(false)
@@ -227,13 +233,46 @@ test('the scene queues swipes, advances the endless run, and pauses in the backg
   game.setActive(true)
   tick(0)
   assert.match(announcements.at(-1), /无限救援第 2 轮/)
+  game.key('p')
+  labels.length = 0
+  tick(0)
+  assert.ok(labels.includes('已暂停'))
+  now += 90000
+  game.key('p')
+  tick(0)
+  assert.ok(labels.includes('00:47'))
   now += 46750
-  game.down(60, 352)
-  game.up(86, 352)
+  game.down(60, 322)
+  game.up(87, 322)
   assert.match(announcements.at(-1), /水位到顶/)
   game.key('Enter')
   tick(0)
   assert.match(announcements.at(-1), /无限救援第 1 轮/)
+  const reroll = () => {
+    game.down(402, 37)
+    game.up(402, 37)
+  }
+  reroll()
+  tick(0)
+  assert.ok(labels.includes('换盘 1'))
+  reroll()
+  tick(0)
+  assert.ok(labels.includes('换盘 0'))
+  reroll()
+  assert.equal(frames.length, 0)
+  game.key('r')
+  labels.length = 0
+  tick(0)
+  assert.ok(labels.includes('从第 1 轮重新开始？'))
+  game.key('Escape')
+  labels.length = 0
+  tick(0)
+  assert.ok(labels.includes('换盘 0'))
+  game.key('r')
+  game.key('Enter')
+  labels.length = 0
+  tick(0)
+  assert.ok(labels.includes('换盘 2'))
 })
 
 function replay({ state, paths }, index, dimensions = index === 0 ? [7, 9] : [9, 12]) {
@@ -251,8 +290,8 @@ function replay({ state, paths }, index, dimensions = index === 0 ? [7, 9] : [9,
   })
 }
 
-test('endless boards grow, then keep a readable size as the flood accelerates', () => {
-  const rounds = [[1, 10, 15, 49500], [2, 11, 15, 46750], [3, 12, 18, 44000], [100, 12, 18, 19800]]
+test('endless boards keep a readable size as obstacles and flood pressure increase', () => {
+  const rounds = [[1, 10, 15, 49500], [2, 10, 15, 46750], [3, 10, 15, 44000], [100, 10, 15, 19800]]
   for (const [round, cols, rows, limit] of rounds) {
     const first = deal(1, () => 0, undefined, round)
     const backup = deal(1, () => 0, first.state, round)
@@ -260,6 +299,8 @@ test('endless boards grow, then keep a readable size as the flood accelerates', 
     for (const board of [first, backup]) {
       replay(board, 1, [cols, rows])
       assert.ok(board.state.level.exits.every(col => Math.abs(col - board.state.level.entry) >= 2))
+      if (round >= 5) assert.ok(board.state.board.includes(ROCK))
+      if (round >= 7) assert.ok(board.state.board.includes(PLATE))
       assert.equal(floodTime(board.state.level), limit)
       assert.equal(advanceWater(board.state, limit - 1).outcome, null)
       assert.equal(advanceWater(board.state, limit).outcome, 'flooded')
@@ -280,7 +321,7 @@ test('the tutorial has a marked outlet that a straight channel cannot reach', ()
 })
 
 test('newly wet tiles award capped time without reversing the water or reopening gates', () => {
-  const { state, paths } = deal(1, () => 0, undefined, 3)
+  const { state, paths } = deal(1, () => 0, undefined, 5)
   const { riseMs } = state.level
   const path = paths.reduce((longest, current) => current.length > longest.length ? current : longest)
   const elapsed = 5 * riseMs
@@ -300,6 +341,94 @@ test('newly wet tiles award capped time without reversing the water or reopening
   assert.equal(position.bonusMs, 6000)
   assert.equal(advanceWater(position, floodTime(state.level) + 5999).outcome, null)
   assert.equal(advanceWater(position, floodTime(state.level) + 6000).outcome, 'flooded')
+})
+
+test('fixed daily boards, local records, hint selection and charged tools', () => {
+  const date = '2026-11-19'
+  const daily = () => deal(1, dailyRandom(date, 1), undefined, 1, { fixed: true })
+  assert.deepEqual(daily(), daily())
+  assert.equal(daily().state.level.tools, false)
+  const storage = new Map()
+  const adapter = { read: key => storage.get(key), write: (key, value) => storage.set(key, { ...value }) }
+  const { record, save } = recordStore(adapter)
+  record.saves = 3
+  save()
+  assert.equal(recordStore(adapter).record.saves, 3)
+  assert.deepEqual([grade(2, false, false), grade(5, true, true), grade(11, false, false)], [3, 2, 1])
+
+  let state = deal(1, () => 0, undefined, 5).state
+  assert.ok(play(state, ...suggest(state)))
+  assert.equal(useTool(state, 'E'), null)
+  state = { ...advanceWater(state, state.level.riseMs * 5), charge: { A: 9, C: 9, E: 9 } }
+  const shut = state.level.exits.find(col => state.level.closeAt[col] === 6)
+  const opened = useTool(state, 'A', shut).state
+  assert.equal(opened.level.closeAt[shut], undefined)
+  assert.equal(opened.charge.A, 0)
+  assert.equal(useTool(opened, 'A', shut), null)
+  const frozen = useTool(opened, 'E').state
+  assert.equal(frozen.bonusMs, 5000)
+  assert.equal(frozen.water, state.water)
+  const rock = state.board.indexOf(ROCK)
+  assert.equal(useTool(frozen, 'C', rock).state.board[rock], null)
+})
+
+test('long match bonuses stack up to eight seconds and fixed boards disable them', () => {
+  const startState = start()
+  const board = startState.board.map(() => null)
+  for (const [i, color] of [[0, 'A'], [1, 'A'], [2, 'B'], [3, 'A'], [4, 'A'], [5, 'E'], [9, 'A'],
+    [42, 'C'], [43, 'D'], [44, 'C'], [50, 'C']]) board[i] = color
+  const state = { ...startState, board, level: { ...startState.level, entry: 5 } }
+  assert.equal(play(state, 2, 9).state.bonusMs, 4000)
+  assert.equal(play({ ...state, longBonusMs: 7000 }, 2, 9).state.bonusMs, 8000)
+  assert.equal(play({ ...state, level: { ...state.level, fixed: true } }, 2, 9).state.bonusMs, 0)
+})
+
+test('daily finale shows all three rescues, shares one result and has a home exit', t => {
+  let now = 1000
+  t.mock.method(Date, 'now', () => now)
+  const frames = []
+  const drawn = []
+  const reports = []
+  const saved = new Map()
+  const context = new Proxy({}, {
+    get: (_, key) => key === 'createLinearGradient' ? () => ({ addColorStop() {} }) :
+      key === 'fillText' ? (value, x, y) => drawn.push([String(value), y]) : () => {},
+  })
+  const game = mount({ getContext: () => context }, {
+    width: 390, height: 806, pixelRatio: 1, random: () => 0, reducedMotion: () => true,
+    requestFrame: frame => frames.push(frame), share: report => reports.push(report),
+    storage: { read: key => saved.get(key), write: (key, value) => saved.set(key, structuredClone(value)) },
+  })
+  t.after(() => game.setActive(false))
+  const tick = (ms = 0) => {
+    now += ms
+    assert.equal(frames.length, 1)
+    frames.shift()()
+  }
+  const tap = (x, y) => { game.down(x, y); game.up(x, y) }
+  tick()
+  game.key('d')
+  tick()
+  for (let round = 1; round <= 3; round++) {
+    const { paths } = deal(1, dailyRandom(dailyDate(), round), undefined, round, { fixed: true })
+    for (const [from, to] of paths[0]) {
+      const point = i => [37.5 + i % 10 * 35, 308.5 + Math.floor(i / 10) * 31]
+      game.down(...point(from))
+      game.up(...point(to))
+      tick(400)
+    }
+    if (round < 3) tick(1000)
+  }
+  assert.ok(drawn.some(([s, y]) => s === '★★★' && y === 553))
+  assert.ok(drawn.some(([s, y]) => s === '累计救援 3 轮' && y === 576))
+  assert.ok(drawn.some(([s]) => s === '返回首页'))
+  game.key('Enter')
+  tick()
+  assert.match(reports[0], /★★★ ★★★ ★★★/)
+  assert.equal([...saved.values()][0].saves, 3)
+  tap(260, 655)
+  tick()
+  assert.ok(drawn.some(([s]) => s === '今日未通关' || s.startsWith('已通关 · ')))
 })
 
 test('an expired shortcut can be rerouted to the outlet that stays open', () => {

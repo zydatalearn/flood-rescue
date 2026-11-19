@@ -1,4 +1,5 @@
 const { mount } = require('./scene.js')
+const { soundPlayer } = require('./sound.js')
 const canvas = wx.createCanvas()
 const { windowWidth, windowHeight, pixelRatio, safeArea } = wx.getWindowInfo()
 const safeTop = Math.max(44, safeArea?.top || 0)
@@ -6,6 +7,18 @@ const safeBottom = safeArea ? Math.max(0, windowHeight - safeArea.bottom) : 0
 const game = mount(canvas, {
   width: windowWidth, height: windowHeight, pixelRatio, safeTop, safeBottom,
   requestFrame: callback => requestAnimationFrame(callback),
+  sound: soundPlayer(() => wx.createWebAudioContext?.(), () => wx.vibrateShort?.({ type: 'light' })),
+  storage: {
+    read: key => wx.getStorageSync(key),
+    write: (key, value) => wx.setStorageSync(key, value),
+  },
+  loadGallery: (page, ready, unavailable) => {
+    const image = wx.createImage()
+    image.onload = () => ready(image)
+    image.onerror = unavailable
+    image.src = page === 0 ? 'dogs.webp' : 'dogs-2.webp'
+  },
+  share: report => wx.setClipboardData({ data: report }),
   createTileSurface: (width, height) => {
     if (!wx.createOffscreenCanvas) return null
     try {

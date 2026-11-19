@@ -6,6 +6,10 @@
   const BONUS_CELLS = 6
   const BONUS_MS = 2000
   const MAX_BONUSES = 3
+  const TOOL_COST = 9
+  const ROCK = 'X'
+  const PLATE = 'Y'
+  const CRACKED = 'Z'
   const TILES = 'ABCDE'
   const GENERATION_ATTEMPTS = 96
   const hardBranches = [
@@ -75,20 +79,24 @@
   }
 
   function opening(level, board) {
-    return { level, board, water: START_WATER, route: [], outcome: null }
+    const water = level.weather === 'tide' ? 3 : START_WATER
+    const supply = (water - START_WATER) * (level.riseMs ?? RISE_MS)
+    const toolBonusMs = level.supply ?? 0
+    return { level, board, water, gateWater: water, route: [], outcome: null,
+      pressureOffset: supply, bonusMs: toolBonusMs, toolBonusMs }
   }
 
   function pick(items, random) {
     return items[Math.floor(random() * items.length)]
   }
 
-  function deal(index, random = Math.random, previous, round = 0) {
+  function deal(index, random = Math.random, previous, round = 0, rules = {}) {
     const sameBoard = state => previous && state.board.length === previous.board.length &&
       state.board.every((tile, cell) => tile === previous.board[cell])
     const endless = index === 1 && round > 0
     const attempts = endless ? 4 * GENERATION_ATTEMPTS : GENERATION_ATTEMPTS
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const candidate = buildBoard(index, random, round)
+      const candidate = buildBoard(index, random, round, rules)
       if (candidate && !sameBoard(candidate.state) && proves(candidate)) return { ...candidate, generated: true }
     }
     if (endless || index === 0) {
@@ -96,26 +104,33 @@
       let seed = 20261119
       const backupRandom = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32)
       for (;;) {
-        const candidate = buildBoard(index, backupRandom, round)
+        const candidate = buildBoard(index, backupRandom, round, rules)
         if (candidate && !sameBoard(candidate.state) && proves(candidate)) return { ...candidate, generated: false }
       }
     }
     return pick(presets(index).filter(({ state }) => !sameBoard(state)), random)
   }
 
-  function buildBoard(index, random, round) {
+  function buildBoard(index, random, round, rules) {
     const intro = index === 0
     const endless = index === 1 && round > 0
-    const cols = endless ? 9 + Math.min(round, 3) : levels[index].cols
-    const rows = endless ? (round < 3 ? 15 : 18) : levels[index].rows
-    const offset = endless ? Math.floor(random() * (cols - 8)) : 0
-    const branch = intro ? null : pick(endless ? endlessBranches : hardBranches, random)
-    const entry = branch ? branch.entry + offset : Math.floor(random() * cols)
+    const cols = endless ? 10 : levels[index].cols
+    const rows = endless ? 15 : levels[index].rows
+    const winding = endless && round >= 5
+    const mirrored = winding && random() < 0.5
+    const column = value => mirrored ? cols - 1 - value : value
+    const offset = endless && !winding ? Math.floor(random() * (cols - 8)) : 0
+    const branch = intro ? null : winding ? { entry: column(1), bands: [[2, 5]] } :
+      pick(endless ? endlessBranches : hardBranches, random)
+    const shaftCol = branch ? branch.entry + offset : Math.floor(random() * cols)
+    const entry = winding ? column(7) : shaftCol
     const direction = intro && (entry < 3 || (entry === 3 && random() < 0.5)) ? 1 : -1
-    const exits = intro ? [entry + 3 * direction] : levels[index].exits.map(col => col + offset)
-    const riseMs = endless ? Math.max(1800, 4500 - (round - 1) * 250) : RISE_MS
-    const level = { cols, rows, exits, entry, riseMs }
-    const junction = 2 + 3 * Math.floor(random() * (rows / 3 - 1))
+    const exits = intro ? [entry + 3 * direction] : winding ? [2, 4, 5].map(column).sort((a, b) => a - b) :
+      levels[index].exits.map(col => col + offset)
+    const riseMs = endless ? Math.max(1800, 4500 - (round - 1) * 250 - (rules.weather === 'storm' ? 500 : 0)) : RISE_MS
+    const level = { cols, rows, exits, entry, riseMs, ...rules }
+    const junction = winding ? 5 + 3 * Math.floor(random() * (rows / 3 - 2)) :
+      2 + 3 * Math.floor(random() * (rows / 3 - 1))
     const groups = []
     const group = (first, stride) => {
       const cells = [first, first + stride, first + 2 * stride]
@@ -127,10 +142,16 @@
       for (let row = startRow; row <= endRow; row += 3) segments.push(group(row * cols + col, cols))
       return segments
     }
-    const stem = shaft(0, junction, entry)
+    const step = mirrored ? -1 : 1
+    const stem = winding ? [
+      ...shaft(0, 2, entry),
+      group(2 * cols + column(4), step),
+      group(2 * cols + column(1), step),
+      ...shaft(3, junction, shaftCol),
+    ] : shaft(0, junction, entry)
     const bands = intro
       ? [[group(junction * cols + entry + direction, direction)]]
-      : branch.bands.map(starts => starts.map(col => group(junction * cols + col + offset, 1)))
+      : branch.bands.map(starts => starts.map(col => group(junction * cols + column(col) + offset, step)))
     const routes = exits.map(exit => {
       const band = bands.find(parts => parts.some(cells => cells.includes(junction * cols + exit)))
       const last = band.findIndex(cells => cells.includes(junction * cols + exit))
@@ -157,6 +178,24 @@
       moves.set(cells, [cell, helper])
     }
     if (matches(board, cols).size) return
+    let reefs = endless ? Math.min(10, Math.max(0, round - 3)) : 0
+    let plates = endless && round >= 7 ? Math.min(3, Math.floor((round - 5) / 2)) : 0
+    const reefStart = reefs ? Math.floor(random() * board.length) : 0
+    for (let i = 0; i < board.length && reefs; i++) {
+      const cell = (i + reefStart) % board.length
+      if (reserved.has(cell) || cell % 4 !== reefStart % 4) continue
+      board[cell] = ROCK
+      reefs--
+    }
+    for (let i = 1; i < board.length && plates; i += 5) {
+      const cell = (i + reefStart) % board.length
+      if (board[cell] !== null || reserved.has(cell)) continue
+      board[cell] = PLATE
+      plates--
+    }
+    if (endless && (round >= 7 || level.weather === 'storm')) {
+      level.valves = level.weather === 'storm' ? stem.slice(0, 2).map(group => group[1]) : [stem[2][1]]
+    }
     for (let cell = 0; cell < board.length; cell++) {
       if (board[cell] !== null) continue
       const first = Math.floor(random() * TILES.length)
@@ -171,7 +210,9 @@
     if (endless) {
       const byLength = exits.map((col, i) => ({ col, length: paths[i].length }))
         .sort((a, b) => a.length - b.length)
-      level.closeAt = { [byLength[0].col]: 6, [byLength[1].col]: 9 }
+      const delay = level.gateDelay ?? 0
+      level.closeAt = { [byLength[0].col]: 6 + delay, [byLength[1].col]: 9 + delay }
+      level.tools = !level.fixed
     }
     return { state: opening(level, board), paths }
   }
@@ -195,7 +236,7 @@
     const found = new Set()
     for (let index = 0; index < board.length; index++) {
       const tile = board[index]
-      if (tile === null) continue
+      if (!isTile(tile)) continue
       if (index % cols < cols - 2 && board[index + 1] === tile && board[index + 2] === tile) {
         found.add(index).add(index + 1).add(index + 2)
       }
@@ -250,7 +291,7 @@
   function availableMove(board, level) {
     for (let a = 0; a < board.length; a++) {
       for (const b of [a + 1, a + level.cols]) {
-        if (board[a] && board[b] && board[a] !== board[b] && adjacent(a, b, level) &&
+        if (isTile(board[a]) && isTile(board[b]) && board[a] !== board[b] && adjacent(a, b, level) &&
           (formsTriple(board, level.cols, a, board[b], b) || formsTriple(board, level.cols, b, board[a], a))) return [a, b]
       }
     }
@@ -262,7 +303,9 @@
     const route = [{ cell: level.entry, from: -1, depth: 0 }]
     const visited = new Set([level.entry])
     for (const { cell, depth } of route) {
-      for (const next of [cell + level.cols, cell - 1, cell + 1]) {
+      const neighbors = [cell + level.cols, cell - 1, cell + 1]
+      if (level.reverseFlow) neighbors.push(cell - level.cols)
+      for (const next of neighbors) {
         if (board[next] !== null || visited.has(next) || !adjacent(cell, next, level)) continue
         route.push({ cell: next, from: cell, depth: depth + 1 })
         visited.add(next)
@@ -281,47 +324,134 @@
 
   function advanceWater(state, elapsedMs) {
     if (state.outcome) return state
-    const pressureMs = Math.max(0, elapsedMs - (state.bonusMs ?? 0))
+    const pressureMs = Math.max(0, elapsedMs + (state.pressureOffset ?? 0) - (state.bonusMs ?? 0))
     const water = Math.min(MAX_WATER, START_WATER + Math.floor(pressureMs / (state.level.riseMs ?? RISE_MS)))
     if (water <= state.water) return state
-    return { ...state, water, outcome: water === MAX_WATER ? 'flooded' : null }
+    return { ...state, water, gateWater: Math.max(state.gateWater ?? state.water, water),
+      outcome: water === MAX_WATER ? 'flooded' : null }
   }
 
   function play(state, a, b) {
     const { level } = state
     const { cols } = level
-    if (state.outcome || !state.board[a] || !state.board[b] || state.board[a] === state.board[b] ||
+    if (state.outcome || !isTile(state.board[a]) || !isTile(state.board[b]) || state.board[a] === state.board[b] ||
       !adjacent(a, b, level)) return null
     const swapped = swap(state.board, a, b)
     const cleared = matches(swapped, cols)
     if (!cleared.size) return null
+    const runs = cleared.size >= 4 ? longRuns(swapped, level, a, b) : []
+    const charge = { ...state.charge }
+    const cost = level.toolCost ?? TOOL_COST
+    if (level.tools) {
+      for (const index of cleared) {
+        const tile = swapped[index]
+        charge[tile] = Math.min(2 * cost, (charge[tile] ?? 0) + (level.doubleCharge && runs.length ? 2 : 1))
+      }
+    }
+    return settle({ ...state, charge }, swapped, cleared, runs)
+  }
+
+  function isTile(value) {
+    return typeof value === 'string' && value.length === 1 && TILES.includes(value)
+  }
+
+  function settle(state, swapped, cleared, longRuns = []) {
+    const { level } = state
 
     const board = swapped.slice()
     for (const index of cleared) board[index] = null
+    if (cleared.size >= 3) {
+      const hit = new Set()
+      for (const cell of cleared) {
+        for (const neighbor of [cell - 1, cell + 1, cell - level.cols, cell + level.cols]) {
+          if ((board[neighbor] === PLATE || board[neighbor] === CRACKED) && adjacent(cell, neighbor, level)) hit.add(neighbor)
+        }
+      }
+      for (const cell of hit) board[cell] = board[cell] === PLATE && !level.thinPlate ? CRACKED : null
+    }
 
     const route = trace(board, level)
-    const drains = outlets(route, level, state.water).length > 0
+    const gateWater = state.gateWater ?? state.water
+    const cost = level.toolCost ?? TOOL_COST
+    const drains = outlets(route, level, gateWater).length > 0
     let outcome = null
     if (drains) outcome = 'escaped'
-    else if (!availableMove(board, level)) outcome = 'blocked'
-    const bonusMs = level.closeAt && !outcome
-      ? BONUS_MS * Math.min(MAX_BONUSES, Math.floor(route.length / BONUS_CELLS))
-      : state.bonusMs ?? 0
+    else if (!availableMove(board, level) && (state.charge?.D ?? 0) < cost &&
+      !((state.charge?.C ?? 0) >= cost && board.some(tile => tile && !isTile(tile))) &&
+      !((state.charge?.A ?? 0) >= cost && outlets(route, level).length)) outcome = 'blocked'
+    const longest = longRuns.reduce((max, run) => Math.max(max, run.length), 0)
+    const longBonusMs = Math.min(8000, (state.longBonusMs ?? 0) +
+      (!outcome && !level.fixed && longest >= 4 ? (longest === 4 ? 2000 : 4000) + (level.longExtra ?? 0) : 0))
+    const routeBonusMs = level.closeAt && !outcome
+      ? BONUS_MS * Math.min(MAX_BONUSES, Math.floor(route.length / (level.bonusCells ?? BONUS_CELLS)))
+      : state.routeBonusMs ?? 0
+    const valveBonusMs = !outcome && level.valves
+      ? 2000 * route.filter(({ cell }) => level.valves.includes(cell)).length : state.valveBonusMs ?? 0
+    const bonusMs = longBonusMs + routeBonusMs + valveBonusMs + (state.toolBonusMs ?? 0)
 
     return {
       state: {
-        level, board, water: drains ? 0 : state.water, route, outcome, bonusMs,
-        ...(drains && level.closeAt ? { rescueWater: state.water } : {}),
+        ...state, level, board, water: drains ? 0 : state.water, gateWater, route, outcome, bonusMs, longBonusMs, routeBonusMs, valveBonusMs,
+        ...(drains ? { rescueWater: state.water } : {}),
       },
       swapped, cleared,
-      longRuns: cleared.size >= 4 ? longRuns(swapped, level, a, b) : [],
+      longRuns,
     }
+  }
+
+  function useTool(state, tool, target) {
+    const cost = state.level.toolCost ?? TOOL_COST
+    if (!state.level.tools || state.outcome || !isTile(tool) || (state.charge?.[tool] ?? 0) < cost) return null
+    let level = state.level
+    const cleared = new Set()
+    let toolBonusMs = state.toolBonusMs ?? 0
+    let water = state.water
+    if (tool === 'A') {
+      const threshold = level.closeAt[target]
+      if (threshold === undefined || (state.gateWater ?? state.water) < threshold) return null
+      const closeAt = { ...level.closeAt }
+      delete closeAt[target]
+      level = { ...level, closeAt }
+    } else if (tool === 'D' || tool === 'C') {
+      const tile = state.board[target]
+      if (tool === 'C' ? !tile || isTile(tile) : !isTile(tile)) return null
+      cleared.add(target)
+    } else if (tool === 'B') {
+      if (water <= START_WATER) return null
+      water--
+      toolBonusMs += level.riseMs ?? RISE_MS
+    } else {
+      toolBonusMs += 5000
+    }
+    const charge = { ...state.charge, [tool]: state.charge[tool] - cost }
+    return settle({ ...state, level, water, gateWater: state.gateWater ?? state.water, charge, toolBonusMs }, state.board, cleared)
+  }
+
+  function suggest(state) {
+    const { board, level, route } = state
+    const front = route.at(-1)?.cell ?? level.entry
+    const distance = cell => Math.abs(cell % level.cols - front % level.cols) +
+      Math.abs(Math.floor(cell / level.cols) - Math.floor(front / level.cols))
+    let best
+    let score = -Infinity
+    for (let a = 0; a < board.length; a++) {
+      for (const b of [a + 1, a + level.cols]) {
+        if (!isTile(board[a]) || !isTile(board[b]) || board[a] === board[b] || !adjacent(a, b, level)) continue
+        if (!formsTriple(board, level.cols, a, board[b], b) && !formsTriple(board, level.cols, b, board[a], a)) continue
+        const result = play(state, a, b)
+        if (!result || result.state.outcome === 'blocked') continue
+        const value = (result.state.outcome === 'escaped' ? 1000 : 0) +
+          (result.state.route.length - route.length) * 20 - Math.min(distance(a), distance(b))
+        if (value > score) { score = value; best = [a, b] }
+      }
+    }
+    return best
   }
 
   const puzzle = {
     MAX_WATER, FLOOD_MS, levelCount: levels.length, presets, deal,
     floodTime: ({ riseMs = RISE_MS }) => (MAX_WATER - START_WATER) * riseMs,
-    matches, adjacent, advanceWater, play, outlets,
+    matches, adjacent, advanceWater, play, outlets, isTile, ROCK, PLATE, CRACKED, TOOL_COST, useTool, suggest,
   }
   if (typeof module === 'object') module.exports = puzzle
   else globalThis.RescuePuzzle = puzzle

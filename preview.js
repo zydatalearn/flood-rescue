@@ -7,6 +7,24 @@ const game = RescueScene.mount(canvas, {
   lowDetail: navigator.deviceMemory <= 4 || navigator.hardwareConcurrency <= 4,
   createTileSurface: (width, height) => Object.assign(document.createElement('canvas'), { width, height }),
   reducedMotion: () => motion.matches,
+  sound: RescueSound.soundPlayer(() => {
+    const Audio = window.AudioContext || window.webkitAudioContext
+    return Audio ? new Audio() : null
+  }, () => navigator.vibrate?.(15)),
+  storage: {
+    read: key => JSON.parse(localStorage.getItem(key)),
+    write: (key, value) => localStorage.setItem(key, JSON.stringify(value)),
+  },
+  loadGallery: (page, ready, unavailable) => {
+    const image = new Image()
+    image.onload = () => ready(image)
+    image.onerror = unavailable
+    image.src = page === 0 ? 'dogs.webp' : 'dogs-2.webp'
+  },
+  share: report => {
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(report).catch(() => window.prompt('复制每日战报', report))
+    else window.prompt('复制每日战报', report)
+  },
   announce: message => { status.textContent = message },
 })
 
