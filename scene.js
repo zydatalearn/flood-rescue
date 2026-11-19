@@ -1,16 +1,28 @@
 (function () {
   const puzzle = typeof module === 'object' ? require('./puzzle.js') : globalThis.RescuePuzzle
-  const { MAX_WATER, FLOOD_MS, levelCount, deal, adjacent, advanceWater, play, outlets } = puzzle
+  const { MAX_WATER, floodTime, deal, adjacent, advanceWater, play, outlets } = puzzle
   const WIDTH = 390
   const HEIGHT = 806
   const SWAP_MS = 68
-  const CHANNEL_MS = 155
+  const CLEAR_MS = 80
+  const BURST_MS = 155
+  const LONG_BURST_MS = 280
+  const NEXT_ROUND_MS = 950
+  const BACKGROUND = '#f3ecdd'
+  const INK = '#24443e'
+  const PANEL = '#fff9ec'
+  const PANEL_EDGE = '#aebdb0'
+  const BOARD = '#c1d0c1'
+  const DRY_SLOT = '#49675e'
+  const WATER = '#238581'
+  const DANGER = '#873d25'
+  const OUTLET_SIDE = ['左侧', '中间', '右侧']
   const COLORS = {
-    A: ['#ffcca2', '#d99066', '#704533', '扳手'],
-    B: ['#a9efdc', '#61b9ae', '#285d5e', '水滴'],
-    C: ['#d8d2ff', '#aaa3d5', '#514c79', '螺母'],
-    D: ['#ffe09a', '#d5aa57', '#715326', '闪电'],
-    E: ['#ffc6bf', '#d98e93', '#75424f', '救生圈'],
+    A: ['#f3bea5', '#db916f', '#593429', '扳手'],
+    B: ['#b8dce8', '#87b9cc', '#254b58', '水滴'],
+    C: ['#dcd0e5', '#b9a2c9', '#493952', '螺母'],
+    D: ['#f4dfa3', '#dfbe68', '#50401d', '闪电'],
+    E: ['#cedeb2', '#a9c28d', '#344b2e', '救生圈'],
   }
   const ease = value => 1 - (1 - value) ** 2
   const interpolate = (from, to, ratio) => from + (to - from) * ratio
@@ -24,6 +36,9 @@
     const random = options.random || Math.random
     let width, height, scale, offsetX, offsetY, density
     let levelIndex = 0
+    let roundNumber = 0
+    let nextRoundAt = null
+    let active = true
     const openings = []
     pickOpening()
     let state = openings[levelIndex]
@@ -33,7 +48,8 @@
     let pressed = null
     let selected = -1
     let focus = -1
-    let message = '连成三个，消开的格子会留下水路。'
+    let message = '连成三个，把水绕到金色排水口。'
+    let bonusNotice = null
     let framePending = false
     let clockSince = Date.now()
     let playedMs = 0
@@ -63,19 +79,33 @@
         finish(next)
       } else {
         rise = reducedMotion() ? null : { from: now, water: state.water }
+        const { exits, closeAt } = state.level
+        const closed = closeAt ? exits.findIndex(col => state.water < closeAt[col] && next.water >= closeAt[col]) : -1
+        const warning = closeAt ? exits.findIndex(col => next.water === closeAt[col] - 1) : -1
+        if (closed >= 0) {
+          message = `${OUTLET_SIDE[closed]}出口已关，可改接仍开放的出口。`
+          announce(message)
+        }
+        if (warning >= 0) announce(`${OUTLET_SIDE[warning]}出口下次涨水就会关闭。`)
         state = next
       }
     }
 
     function scheduleClock(now) {
       if (clockSince === null || clockTimer !== undefined) return
+      const played = elapsed(now)
+      const riseMs = floodTime(state.level) / (MAX_WATER - 1)
+      const bonus = state.bonusMs ?? 0
+      const nextSecond = (floodTime(state.level) + bonus - played) % 1000 || 1000
+      const nextRise = state.water * riseMs + bonus - played
       clockTimer = setTimeout(() => {
         clockTimer = undefined
         schedule()
-      }, 1000 - elapsed(now) % 1000)
+      }, Math.min(nextSecond, nextRise))
     }
 
-    function setActive(active) {
+    function setActive(nextActive) {
+      active = nextActive
       const now = Date.now()
       if (!active) {
         updateWater(now)
@@ -85,16 +115,17 @@
         clockSince = now
         schedule()
       }
+      if (active && nextRoundAt !== null) schedule()
     }
 
     function pickOpening() {
-      openings[levelIndex] = deal(levelIndex, random, openings[levelIndex]).state
+      openings[levelIndex] = deal(levelIndex, random, openings[levelIndex], roundNumber).state
     }
 
     function boardLayout({ cols, rows }) {
       const top = rows > 9 ? 339 : 367
       const pitch = Math.min(Math.floor(336 / cols), Math.floor((763 - top) / rows))
-      const cell = pitch - 4
+      const cell = pitch - (rows > 12 ? 2 : 4)
       return { top, pitch, cell, left: Math.floor((WIDTH - (cols - 1) * pitch - cell) / 2) }
     }
 
@@ -127,7 +158,7 @@
       requestFrame(() => {
         framePending = false
         draw(Date.now())
-        if (animation || rise) schedule()
+        if (animation || rise || (active && nextRoundAt !== null)) schedule()
       })
     }
 
@@ -256,7 +287,7 @@
       ctx.lineTo(x + w, y)
       ctx.lineTo(x + w, bottom)
       ctx.closePath()
-      ctx.fillStyle = foreground ? '#459eae66' : ramp(y, bottom - y, '#62c4c3', '#265c79')
+      ctx.fillStyle = foreground ? '#56b7ac44' : ramp(y, bottom - y, '#79c6b9', WATER)
       ctx.fill()
       if (!foreground) return
       ctx.strokeStyle = '#b4eee0'
@@ -327,23 +358,20 @@
     }
 
     function pipe(path) {
-      line(path, '#0b1e2a', 13)
-      line(path, '#607982', 9)
-      line(path, '#334f5f', 5)
+      line(path, '#31574f', 13)
+      line(path, '#77968a', 9)
+      line(path, '#42685f', 5)
     }
 
     function scene(view, phase, rising, rescue) {
-      box(17, 70, 356, 277, 19, '#192b38', '#354a54')
+      box(17, 70, 356, 277, 19, PANEL, PANEL_EDGE)
       ctx.save()
       round(18, 71, 354, 275, 18)
       ctx.clip()
-      box(25, 78, 340, 230, 12, ramp(78, 230, '#253756', '#78979a'))
+      box(25, 78, 340, 230, 12, ramp(78, 230, '#b5d9d5', '#f4e6c6'))
       const portraitScale = 277 / (277 + layout.top - 429)
-      oval(214, 136, 25, 25 * portraitScale, '#ead9b00e')
-      oval(214, 136, 18, 18 * portraitScale, '#f4e4bb')
-      for (const [x, y] of [[48, 110], [83, 143], [142, 111], [168, 140], [253, 103], [330, 135]]) {
-        oval(x, y, 1, 1, '#e4e2cf')
-      }
+      oval(214, 136, 25, 25 * portraitScale, '#fff2c755')
+      oval(214, 136, 18, 18 * portraitScale, '#fff2c7')
       ctx.save()
       round(25, 78, 340, 223, 12)
       ctx.clip()
@@ -353,7 +381,7 @@
       ctx.bezierCurveTo(245, 143, 271, 192, 365, 149)
       ctx.lineTo(365, 308)
       ctx.lineTo(25, 308)
-      ctx.fillStyle = '#485e72'
+      ctx.fillStyle = '#a2bb9e'
       ctx.fill()
       ctx.beginPath()
       ctx.moveTo(25, 201)
@@ -361,7 +389,7 @@
       ctx.quadraticCurveTo(326, 165, 365, 185)
       ctx.lineTo(365, 308)
       ctx.lineTo(25, 308)
-      ctx.fillStyle = '#314e60'
+      ctx.fillStyle = '#719783'
       ctx.fill()
       // The harbour beacon sits directly above the exit.
       box(291, 160, 7, 26, 1, '#c4b79f')
@@ -377,7 +405,7 @@
       ctx.save()
       round(25, 78, 340, 223, 12)
       ctx.clip()
-      box(249, 201, 70, 95, 4, '#102932')
+      box(249, 201, 70, 95, 4, '#31574f')
       box(270, 207, 45, 48, 6, view.outcome === 'escaped' ? '#94cf92' : '#244d46', '#698576')
       line([[285, 230], [303, 230], [297, 224]], '#d4edb4', 2)
       line([[303, 230], [297, 236]], '#d4edb4', 2)
@@ -392,32 +420,35 @@
       water(25, y, 340, 301, phase * 7, true)
       ctx.restore()
 
-      label('进水', 78, 98, 11, '#cfdecf')
+      label('进水', 78, 98, 11, INK)
       for (let i = 0; i < MAX_WATER; i++) {
-        box(86 + i * 16, 322, 12, 4, 2, i < Math.round(view.water) ? '#9ad9cb' : '#344d59')
+        box(86 + i * 16, 322, 12, 4, 2, i < Math.round(view.water) ? WATER : '#c4d0c4')
       }
-      label('水位', 49, 325, 11, '#bdced1')
-      label(`${Math.round(view.water)} / ${MAX_WATER}`, 344, 325, 12, view.water >= MAX_WATER - 2 ? '#ffd19c' : '#d9eee7', 700, 'right')
+      label(`水位 ${Math.round(view.water)}`, 37, 325, 11, INK)
+      label(`${Math.round(view.water)} / ${MAX_WATER}`, 344, 325, 12, view.water >= MAX_WATER - 2 ? DANGER : INK, 700, 'right')
       ctx.restore()
       for (const x of [28, 362]) for (const y of [81, 335]) oval(x, y, 2, 2, '#6e9092')
     }
 
     function controls(now, connected) {
       const y = 363 + layout.top - 429
-      const routeGoal = state.level.exits ? '接通任一金色排水口' : '消格子接通底边'
+      const routeGoal = state.level.closeAt ? '数字标示关闭水位' : '接通金色排水口'
       const seconds = connected ? Math.floor(elapsed(now) / 1000) :
-        Math.max(0, Math.ceil((FLOOD_MS - elapsed(now)) / 1000))
+        Math.max(0, Math.ceil((floodTime(state.level) + (state.bonusMs ?? 0) - elapsed(now)) / 1000))
       const danger = seconds <= 10 && !connected
-      const timeColor = danger ? '#ffc38d' : '#f0e8d1'
-      box(17, y, 172, 37, 9, '#15303a', danger ? '#855f46' : '#2b4b54')
+      const timeColor = danger ? DANGER : INK
+      box(17, y, 172, 37, 9, danger ? '#fff0df' : PANEL, danger ? '#cc8b68' : PANEL_EDGE)
       oval(36, y + 18, 8, 8, timeColor)
-      line([[36, y + 13], [36, y + 18], [39, y + 20]], '#102e39', 1.5)
+      line([[36, y + 13], [36, y + 18], [39, y + 20]], '#ffffff', 1.5)
       label(connected ? '用时' : '距淹没', 51, y + 19, 12, timeColor)
+      if (!connected && bonusNotice?.until > now) {
+        label(`+${bonusNotice.seconds} 秒`, 110, y + 19, 12, '#246756', 700, 'center')
+      }
       label(`00:${String(seconds).padStart(2, '0')}`, 174, y + 19, 17, timeColor, 700, 'right')
-      box(201, y, 172, 37, 9, '#15303a', '#2b4b54')
+      box(201, y, 172, 37, 9, PANEL, PANEL_EDGE)
       box(209, y + 7, 24, 23, 6, COLORS.B[0])
       line([[215, y + 12], [221, y + 12], [221, y + 24], [227, y + 24]], '#102e39', 3)
-      label(connected ? '水路已接通' : routeGoal, 244, y + 19, 12, connected ? '#aee9c1' : '#f0e8d1')
+      label(connected ? '水路已接通' : routeGoal, 244, y + 19, 12, connected ? '#246756' : INK)
     }
 
     function tile(type, x, y, selectedTile, focused, clearProgress = 0) {
@@ -435,8 +466,8 @@
       const depth = cell * 0.13
       const top = y + (selectedTile ? depth * 0.72 : 0)
       const faceHeight = cell - depth
-      box(x, y + 1.5, cell, cell, radius, '#0d1b24')
-      box(x, y + depth, cell, faceHeight, radius, edge)
+      box(x, y + 1.5, cell, cell, radius, '#294a3e38')
+      box(x, y + depth, cell, faceHeight, radius, edge + 'a6')
       box(x, top, cell, faceHeight, radius, ramp(top, faceHeight, bright, middle))
       // A curved rim catches the light on the upper-left shoulder of the key.
       ctx.beginPath()
@@ -450,9 +481,52 @@
       symbol(type, x + cell / 2, top + faceHeight / 2 + 0.8, iconSize, edge)
       if (selectedTile || focused) {
         round(x + 1, top + 1, cell - 2, faceHeight - 2, radius - 1)
-        ctx.strokeStyle = selectedTile ? '#fff0a5' : '#ffffff'
+        ctx.strokeStyle = selectedTile ? '#653e29' : INK
         ctx.lineWidth = 2.5
         ctx.stroke()
+      }
+      ctx.restore()
+    }
+
+    function clearBurst(index, type, progress) {
+      const [x, y] = center(index)
+      const size = layout.cell
+      const color = COLORS[type][1]
+      ctx.save()
+      ctx.globalAlpha = (1 - progress) * 0.85
+      ctx.beginPath()
+      ctx.arc(x, y, size * (0.18 + 0.48 * progress), 0, 2 * Math.PI)
+      ctx.lineWidth = Math.max(1, size * 0.05 * (1 - progress))
+      ctx.strokeStyle = color
+      ctx.stroke()
+      for (let i = 0; i < 5; i++) {
+        const angle = i * 2 * Math.PI / 5 + index * 0.7
+        const radius = size * (0.22 + (0.45 + (i % 2) * 0.15) * progress)
+        const chipX = x + Math.cos(angle) * radius
+        const chipY = y + Math.sin(angle) * radius + size * 0.15 * progress ** 2
+        const chip = size * (0.055 + 0.035 * (1 - progress))
+        box(chipX - chip, chipY - chip, 2 * chip, 2 * chip, chip * 0.45, color)
+      }
+      ctx.restore()
+    }
+
+    function longBurst({ first, last, length }, type, progress, showCount) {
+      const [x, y] = center(first)
+      const [endX, endY] = center(last)
+      const size = layout.cell
+      const strong = length >= 5
+      const sweep = ease(clamp(progress * 1.8))
+      const points = [[x, y], [interpolate(x, endX, sweep), interpolate(y, endY, sweep)]]
+      ctx.save()
+      ctx.lineCap = 'round'
+      ctx.globalAlpha = 1 - clamp((progress - 0.42) / 0.58)
+      line(points, COLORS[type][1], size * (strong ? 0.54 : 0.32))
+      line(points, strong ? '#ffe9a2' : '#fffbec', size * (strong ? 0.22 : 0.12))
+      if (showCount) {
+        const midX = Math.min(323, Math.max(67, (x + endX) / 2))
+        const midY = Math.max(layout.top + 13, (y + endY) / 2 - size * 0.6)
+        box(midX - 32, midY - 10, 64, 20, 9, strong ? '#ffeaab' : PANEL, COLORS[type][2])
+        label(`${length} 连消`, midX, midY, 12, INK, 700, 'center')
       }
       ctx.restore()
     }
@@ -460,22 +534,21 @@
     function board(phase) {
       const { cols, entry } = state.level
       const { left, top, pitch, cell } = layout
-      box(17, top - 13, 356, 783 - top, 18, '#192b38', '#354a54')
+      box(17, top - 13, 356, 783 - top, 18, BOARD, '#8fa99b')
       const entries = phase.board || state.board
       const ground = phase.result?.state.board || state.board
       const route = phase.result?.state.route || state.route
       const wet = new Map()
-      const alreadyWet = new Set(state.route.map(({ cell: index }) => index))
-      const depthCount = route.length ? route.at(-1).depth + 1 : 1
-      for (const { cell: index, from, depth } of route) {
-        const amount = alreadyWet.has(index) ? 1 : clamp((phase.routeProgress ?? 1) * depthCount - depth)
+      for (const { cell: index, from } of route) {
+        const step = phase.arrivals?.get(index) ?? -1
+        const amount = step < 0 ? 1 : clamp(phase.waterFront - step)
         wet.set(index, { from, amount })
       }
 
       for (let i = 0; i < ground.length; i++) {
         if (ground[i] !== null) continue
         const [x, y] = center(i)
-        box(x - cell / 2, y - cell / 2, cell, cell + 1, 7, '#071c28', '#284955')
+        box(x - cell / 2, y - cell / 2, cell, cell + 1, 7, DRY_SLOT)
       }
       for (let i = 0; i < ground.length; i++) {
         if (ground[i] !== null) continue
@@ -484,7 +557,7 @@
           if (!adjacent(i, neighbor, state.level) || ground[neighbor] !== null) continue
           const [nx, ny] = center(neighbor)
           const joined = wet.get(i)?.amount === 1 && wet.get(neighbor)?.amount === 1
-          ctx.fillStyle = joined ? '#218eaa' : '#081f2b'
+          ctx.fillStyle = joined ? WATER : DRY_SLOT
           if (nx > x) ctx.fillRect(x + cell / 2 - 4, y - cell * 0.34, pitch - cell + 8, cell * 0.68)
           else ctx.fillRect(x - cell * 0.34, y + cell / 2 - 4, cell * 0.68, pitch - cell + 8)
         }
@@ -500,9 +573,17 @@
         ctx.save()
         round(startX, startY, size, size, 6)
         ctx.clip()
-        ctx.fillStyle = ramp(startY, size, '#40bada', '#177c9d')
-        if (fx === x) ctx.fillRect(startX, startY, size, size * amount)
-        else ctx.fillRect(fx < x ? startX : startX + size * (1 - amount), startY, size * amount, size)
+        ctx.fillStyle = ramp(startY, size, '#81dfcc', WATER)
+        const filled = size * amount
+        const leadingX = fx < x ? startX + filled : startX + size - filled
+        if (fx === x) ctx.fillRect(startX, startY, size, filled)
+        else ctx.fillRect(fx < x ? startX : leadingX, startY, filled, size)
+        if (amount < 1) {
+          ctx.fillStyle = '#dcfff2'
+          const crest = Math.min(3, filled)
+          if (fx === x) ctx.fillRect(startX, startY + filled - crest, size, crest)
+          else ctx.fillRect(fx < x ? leadingX - crest : leadingX, startY, crest, size)
+        }
         if (amount === 1) {
           if (index % 3 !== 1) {
             line([[x - size * 0.25, y - size * 0.12], [x, y - size * 0.17], [x + size * 0.22, y - size * 0.13]],
@@ -536,29 +617,52 @@
         ctx.lineWidth = 2
         ctx.stroke()
       }
+      if (phase.burst !== undefined) {
+        for (const index of phase.result.cleared) clearBurst(index, phase.result.swapped[index], phase.burst)
+      }
+      if (phase.longBurst !== undefined) {
+        const runs = phase.result.longRuns
+        const longest = runs.reduce((best, run) => run.length > best.length ? run : best)
+        for (const run of runs) longBurst(run, phase.result.swapped[run.first], phase.longBurst, run === longest)
+      }
       ctx.restore()
-      drawPorts(entry, route, wet, phase.routeProgress, phase.pumping)
+      drawPorts(entry, route, wet, phase.pumpProgress)
       return route
     }
 
-    function drawPorts(entry, route, wet, progress, pumping) {
-      const { exits, cols, rows } = state.level
+    function drawPorts(entry, route, wet, pumpProgress) {
+      const { exits, cols, rows, closeAt } = state.level
+      const water = state.rescueWater ?? state.water
       const { top, cell } = layout
       const [entryX] = center(entry)
       const inlet = [[253, sceneY(304)], [253, sceneY(352)], [195, sceneY(352)],
         [195, top - 20], [entryX, top - 20], [entryX, top]]
-      line(inlet, '#101e2b', 10)
-      line(inlet, '#456672', 7)
-      line(inlet, route.length ? '#41acc0' : '#254550', 3)
+      line(inlet, '#31574f', 10)
+      line(inlet, '#77968a', 7)
+      line(inlet, route.length ? '#73d8c8' : '#42685f', 3)
       box(entryX - 9, top - 5, 18, 6, 3, '#a8f0dc')
       const ports = exits ? exits.map(col => (rows - 1) * cols + col) : outlets(route, state.level)
       for (const index of ports) {
         const [x, y] = center(index)
         const mouth = y + cell / 2 + 2
-        const active = wet.get(index)?.amount === 1
-        box(x - 11, mouth - 4, 22, 7, 3, active ? '#a8f0dc' : '#edbc67')
-        if (active && pumping) {
-          oval(x, mouth + 4 + (progress || 0) * 4, 2.5, 3.5, '#8de9ed')
+        const limit = closeAt?.[index % cols]
+        const closed = limit !== undefined && water >= limit
+        const warning = limit !== undefined && water === limit - 1
+        const active = !closed && wet.get(index)?.amount === 1
+        box(x - 11, mouth - 4, 22, 7, 3,
+          active ? '#74d8ba' : closed ? DRY_SLOT : warning ? '#df8b69' : '#dbad54', INK)
+        if (closeAt) {
+          label(closed ? '已关' : limit ?? '常开', x, mouth + 11, 10,
+            warning ? DANGER : INK, 700, 'center')
+        }
+        if (active && pumpProgress !== undefined) {
+          ctx.save()
+          ctx.globalAlpha = 1 - pumpProgress
+          for (let i = -2; i <= 2; i++) {
+            oval(x + i * (3 + 8 * pumpProgress), mouth - 25 * Math.sin(Math.PI * pumpProgress) + Math.abs(i) * 3,
+              2, 3, '#b4f7fb')
+          }
+          ctx.restore()
         }
       }
     }
@@ -566,21 +670,29 @@
     function finish(nextState) {
       state = nextState
       if (state.outcome === 'escaped') {
-        message = levelIndex === levelCount - 1 ? '小狗脱险，两关全部通关！' : '小狗已从逃生口脱险！'
+        if (roundNumber) nextRoundAt = Date.now() + NEXT_ROUND_MS
+        message = roundNumber ? `小狗脱险，已救援 ${roundNumber} 轮。` : '小狗已从逃生口脱险！'
       }
       else if (state.outcome === 'flooded') message = '水位到顶，小狗没能脱险。'
       else if (state.outcome === 'blocked') message = '棋盘上没有可消除的组合了。'
-      else if (state.route.length) message = state.level.exits
-        ? '水已流进棋盘，继续接通任一排水口。' : '水已流进棋盘，继续接到底边。'
+      else if (state.route.length) {
+        const { cols, rows, closeAt } = state.level
+        const reachedClosed = state.route.some(({ cell }) => cell >= cols * (rows - 1) && state.water >= closeAt?.[cell % cols])
+        message = reachedClosed ? '水路接到了已关闭的出口，改走仍开放的出口。' : state.level.exits
+          ? '水已流进棋盘，继续接通开放的排水口。' : '水已流进棋盘，继续接到底边。'
+      }
       else message = '从棋盘上沿的水口开始接水路。'
-      announce(`${message} 水位 ${state.water}。`)
+      const tally = roundNumber && (state.outcome === 'flooded' || state.outcome === 'blocked')
+        ? ` 累计救援 ${roundNumber - 1} 轮。` : ''
+      announce(`${message}${tally} 水位 ${state.water}。`)
     }
 
     function draw(now) {
+      if (active && nextRoundAt !== null && now >= nextRoundAt) continueLevel()
       updateWater(now)
       scheduleClock(now)
       ctx.setTransform(density, 0, 0, density, 0, 0)
-      ctx.fillStyle = '#101e2b'
+      ctx.fillStyle = BACKGROUND
       ctx.fillRect(0, 0, width, height)
       ctx.translate(offsetX, offsetY)
       ctx.scale(scale, scale)
@@ -606,7 +718,7 @@
           }
           elapsed -= part.duration
         }
-        const { result, flowAt, flowDuration, rescueAt, end } = animation
+        const { result, arrivals, flowSteps, channelMs, flowAt, flowDuration, rescueAt, end } = animation
         if (age >= end) {
           animation = null
           if (result) {
@@ -620,45 +732,62 @@
           if (age >= SWAP_MS) {
             phase.board ||= result.state.board
             phase.result = result
-            phase.routeProgress = clamp((age - SWAP_MS) / CHANNEL_MS)
+            const burstAge = age - SWAP_MS
+            if (burstAge < BURST_MS) phase.burst = ease(burstAge / BURST_MS)
+            if (result.longRuns.length && burstAge < LONG_BURST_MS) phase.longBurst = burstAge / LONG_BURST_MS
+            phase.arrivals = arrivals
+            phase.waterFront = clamp((burstAge - CLEAR_MS) / channelMs) * flowSteps
           }
           if (flowDuration && age >= flowAt) {
             progress = ease(clamp((age - flowAt) / flowDuration))
             phase.pumping = progress < 1
+            if (phase.pumping) phase.pumpProgress = progress
             view = { ...state, water: interpolate(state.water, result.state.water, progress) }
           }
           if (rescueAt !== undefined) rescue = ease(clamp((age - rescueAt) / 245))
         }
       }
 
-      label('水闸救援', 19, 36, 26)
-      label(`第 ${levelIndex + 1} 关`, 134, 37, 13, '#cbdcd4')
-      box(262, 22, 51, 30, 9, '#193743', '#3a5861')
-      label('重来', 287.5, 37, 13, '#dfdfc8', 700, 'center')
-      box(321, 22, 51, 30, 9, '#193743', '#3a5861')
-      label('换盘', 346.5, 37, 13, '#dfdfc8', 700, 'center')
+      label('水闸救援', 19, 36, 26, INK)
+      label(roundNumber ? `无限救援 · 第 ${roundNumber} 轮` : '第 1 关', 134, 37, 13, INK)
+      box(262, 22, 51, 30, 9, PANEL, PANEL_EDGE)
+      label('重来', 287.5, 37, 13, INK, 700, 'center')
+      box(321, 22, 51, 30, 9, PANEL, PANEL_EDGE)
+      label('换盘', 346.5, 37, 13, INK, 700, 'center')
       ctx.save()
       ctx.translate(0, sceneY(0))
       ctx.scale(1, (sceneY(347) - 70) / 277)
       scene(view, progress, rising, rescue)
       ctx.restore()
       const route = board(phase)
-      controls(now, outlets(route, state.level).length > 0)
+      controls(now, outlets(route, state.level, state.rescueWater ?? state.water).length > 0)
       let status = message
+      let statusColor = INK
       if (rescue) status = '小狗正在爬向逃生口。'
       else if (phase.pumping) status = '水正从棋盘底部排出。'
-      else if (phase.result?.state.route.length) status = '水正沿着消开的格子往下流。'
-      label(status, WIDTH / 2, 789, 13, '#cbdcd4', 600, 'center')
+      else if (!state.outcome && state.level.closeAt) {
+        const warning = state.level.exits.findIndex(col => state.water === state.level.closeAt[col] - 1)
+        if (warning >= 0) {
+          status = `${OUTLET_SIDE[warning]}出口下次涨水就会关闭。`
+          statusColor = DANGER
+        }
+      }
+      label(status, WIDTH / 2, 789, 13, statusColor, 600, 'center')
 
       if (state.outcome) {
         const won = state.outcome === 'escaped'
-        const final = levelIndex === levelCount - 1
-        box(17, layout.top - 13, 356, 783 - layout.top, 18, '#081f2bc9')
-        box(55, 512, 280, 145, 18, '#12313c', '#537477')
+        box(17, layout.top - 13, 356, 783 - layout.top, 18, '#24443e9c')
+        box(55, 512, 280, 145, 18, PANEL, PANEL_EDGE)
         const heading = state.outcome === 'flooded' ? '小狗被淹没了' : '救援中止'
-        label(won ? (final ? '两关全部通关' : '救援成功') : heading, WIDTH / 2, 550, 24, '#f1e2b5', 700, 'center')
-        box(122, 586, 146, 42, 10, '#f2bf73')
-        label(won ? (final ? '再玩一轮' : '挑战第二关') : '再试一次', WIDTH / 2, 607, 16, '#253938', 700, 'center')
+        label(won ? '救援成功' : heading, WIDTH / 2, 549, 24, INK, 700, 'center')
+        if (won && roundNumber) {
+          label('正在进入下一轮…', WIDTH / 2, 607, 16, INK, 700, 'center')
+        } else {
+          if (roundNumber) label(`累计救援 ${roundNumber - 1} 轮`, WIDTH / 2, 576, 14, INK, 700, 'center')
+          box(122, 586, 146, 42, 10, '#edc67f')
+          label(won ? '开始无限救援' : roundNumber ? '从第 1 轮开始' : '再试一次',
+            WIDTH / 2, 607, 16, '#253938', 700, 'center')
+        }
       }
     }
 
@@ -666,6 +795,7 @@
       pauseClock(Date.now())
       playedMs = 0
       clockSince = Date.now()
+      nextRoundAt = null
       rise = null
       state = openings[levelIndex]
       layout = boardLayout(state.level)
@@ -674,8 +804,9 @@
       selected = -1
       focus = -1
       pressed = null
-      message = levelIndex === 0 ? '连成三个，消开的格子会留下水路。' : '消开格子，把水引向任一金色排水口。'
-      announce(message)
+      bonusNotice = null
+      message = levelIndex === 0 ? '连成三个，把水绕到金色排水口。' : '每接通 6 格加 2 秒，常开口始终可用。'
+      announce(roundNumber ? `无限救援第 ${roundNumber} 轮。${message}` : message)
       schedule()
     }
 
@@ -689,6 +820,18 @@
         return
       }
       const result = play(state, a, b)
+      const earnedMs = (result?.state.bonusMs ?? 0) - (state.bonusMs ?? 0)
+      const combo = result?.longRuns.reduce((longest, run) => Math.max(longest, run.length), 0)
+      const feedback = [
+        combo && `${combo} 连消。`,
+        earnedMs > 0 && `水路加时 ${earnedMs / 1000} 秒。`,
+      ].filter(Boolean).join(' ')
+      if (earnedMs > 0) {
+        bonusNotice = { seconds: earnedMs / 1000, until: now + 1200 }
+        state = { ...state, bonusMs: result.state.bonusMs }
+        clearTimeout(clockTimer)
+        clockTimer = undefined
+      }
       if (result?.state.outcome) {
         pauseClock(now)
         rise = null
@@ -699,17 +842,31 @@
       }
       if (reducedMotion()) {
         if (result) finish(result.state)
+        if (feedback) announce(feedback)
         schedule()
         return
       }
+      if (feedback) announce(feedback)
       const parts = [{ swap: [a, b], duration: SWAP_MS }]
       let end = SWAP_MS * 2
       let flowAt = SWAP_MS
       let flowDuration = 0
       let rescueAt
+      let arrivals
+      let flowSteps = 0
+      let channelMs = 90
       if (result) {
-        parts.push({ board: result.swapped, cleared: result.cleared, duration: 80 })
-        end = SWAP_MS + CHANNEL_MS
+        const alreadyWet = new Set(state.route.map(({ cell }) => cell))
+        arrivals = new Map()
+        for (const { cell, from } of result.state.route) {
+          const step = alreadyWet.has(cell) ? -1 : (arrivals.get(from) ?? -1) + 1
+          arrivals.set(cell, step)
+          flowSteps = Math.max(flowSteps, step + 1)
+        }
+        parts.push({ board: result.swapped, cleared: result.cleared, duration: CLEAR_MS })
+        channelMs = Math.min(310, Math.max(90, flowSteps * 23))
+        end = SWAP_MS + (flowSteps ? CLEAR_MS + channelMs : BURST_MS)
+        if (result.longRuns.length) end = Math.max(end, SWAP_MS + LONG_BURST_MS)
         if (result.state.outcome === 'escaped') {
           flowAt = end
           flowDuration = 275
@@ -722,7 +879,7 @@
         reversed[b] = state.board[a]
         parts.push({ board: reversed, swap: [a, b], duration: SWAP_MS })
       }
-      animation = { from: now, parts, result, end, flowAt, flowDuration, rescueAt }
+      animation = { from: now, parts, result, arrivals, flowSteps, channelMs, end, flowAt, flowDuration, rescueAt }
       schedule()
     }
 
@@ -761,7 +918,11 @@
 
     function continueLevel() {
       if (state.outcome === 'escaped') {
-        levelIndex = (levelIndex + 1) % levelCount
+        levelIndex = 1
+        roundNumber++
+        pickOpening()
+      } else if (roundNumber) {
+        roundNumber = 1
         pickOpening()
       }
       reset()
@@ -775,6 +936,7 @@
       if (!pressed) return
       const origin = pressed
       pressed = null
+      if (nextRoundAt !== null) return
       const target = point(x, y)
       const dx = target.x - origin.x
       const dy = target.y - origin.y
@@ -782,6 +944,10 @@
         const resetButton = origin.x >= 262 && origin.x <= 313 && origin.y >= 22 && origin.y <= 52
         const shuffleButton = origin.x >= 321 && origin.x <= 372 && origin.y >= 22 && origin.y <= 52
         const replayButton = state.outcome && origin.x >= 122 && origin.x <= 268 && origin.y >= 586 && origin.y <= 628
+        if (state.outcome && roundNumber) {
+          if (replayButton) continueLevel()
+          return
+        }
         if (shuffleButton) {
           pickOpening()
           return reset()
@@ -804,12 +970,13 @@
     }
 
     function key(value) {
+      if (nextRoundAt !== null) return value === 'Enter' || value.toLowerCase() === 'r'
       if (value === 'Enter' && state.outcome) {
         continueLevel()
         return true
       }
       if (value.toLowerCase() === 'r') {
-        reset()
+        if (!state.outcome || !roundNumber) reset()
         return true
       }
       const { cols } = state.level

@@ -3,12 +3,19 @@
   const MAX_WATER = 12
   const RISE_MS = 5000
   const FLOOD_MS = (MAX_WATER - START_WATER) * RISE_MS
+  const BONUS_CELLS = 6
+  const BONUS_MS = 2000
+  const MAX_BONUSES = 3
   const TILES = 'ABCDE'
   const GENERATION_ATTEMPTS = 96
   const hardBranches = [
     { entry: 1, bands: [[2, 5]] },
     { entry: 3, bands: [[0], [4]] },
     { entry: 7, bands: [[4, 1]] },
+  ]
+  const endlessBranches = [
+    { entry: 0, bands: [[1, 4]] },
+    { entry: 8, bands: [[5, 2]] },
   ]
   const levels = [
     {
@@ -75,21 +82,40 @@
     return items[Math.floor(random() * items.length)]
   }
 
-  function deal(index, random = Math.random, previous) {
-    const sameBoard = state => previous && state.board.every((tile, cell) => tile === previous.board[cell])
-    for (let attempt = 0; attempt < GENERATION_ATTEMPTS; attempt++) {
-      const candidate = buildBoard(index, random)
+  function deal(index, random = Math.random, previous, round = 0) {
+    const sameBoard = state => previous && state.board.length === previous.board.length &&
+      state.board.every((tile, cell) => tile === previous.board[cell])
+    const endless = index === 1 && round > 0
+    const attempts = endless ? 4 * GENERATION_ATTEMPTS : GENERATION_ATTEMPTS
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const candidate = buildBoard(index, random, round)
       if (candidate && !sameBoard(candidate.state) && proves(candidate)) return { ...candidate, generated: true }
+    }
+    if (endless || index === 0) {
+      // The backup sequence keeps the required bends at every board size.
+      let seed = 20261119
+      const backupRandom = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32)
+      for (;;) {
+        const candidate = buildBoard(index, backupRandom, round)
+        if (candidate && !sameBoard(candidate.state) && proves(candidate)) return { ...candidate, generated: false }
+      }
     }
     return pick(presets(index).filter(({ state }) => !sameBoard(state)), random)
   }
 
-  function buildBoard(index, random) {
-    const { cols, rows, exits } = levels[index]
-    const branch = exits && pick(hardBranches, random)
-    const entry = branch ? branch.entry : Math.floor(random() * cols)
-    const level = { cols, rows, exits, entry }
-    const junction = branch ? pick([2, 5, 8], random) : rows - 1
+  function buildBoard(index, random, round) {
+    const intro = index === 0
+    const endless = index === 1 && round > 0
+    const cols = endless ? 9 + Math.min(round, 3) : levels[index].cols
+    const rows = endless ? (round < 3 ? 15 : 18) : levels[index].rows
+    const offset = endless ? Math.floor(random() * (cols - 8)) : 0
+    const branch = intro ? null : pick(endless ? endlessBranches : hardBranches, random)
+    const entry = branch ? branch.entry + offset : Math.floor(random() * cols)
+    const direction = intro && (entry < 3 || (entry === 3 && random() < 0.5)) ? 1 : -1
+    const exits = intro ? [entry + 3 * direction] : levels[index].exits.map(col => col + offset)
+    const riseMs = endless ? Math.max(1800, 4500 - (round - 1) * 250) : RISE_MS
+    const level = { cols, rows, exits, entry, riseMs }
+    const junction = 2 + 3 * Math.floor(random() * (rows / 3 - 1))
     const groups = []
     const group = (first, stride) => {
       const cells = [first, first + stride, first + 2 * stride]
@@ -102,16 +128,14 @@
       return segments
     }
     const stem = shaft(0, junction, entry)
-    const routes = [stem]
-    if (branch) {
-      const bands = branch.bands.map(starts => starts.map(col => group(junction * cols + col, 1)))
-      routes.length = 0
-      for (const exit of exits) {
-        const band = bands.find(parts => parts.some(cells => cells.includes(junction * cols + exit)))
-        const last = band.findIndex(cells => cells.includes(junction * cols + exit))
-        routes.push([...stem, ...band.slice(0, last + 1), ...shaft(junction + 1, rows - 1, exit)])
-      }
-    }
+    const bands = intro
+      ? [[group(junction * cols + entry + direction, direction)]]
+      : branch.bands.map(starts => starts.map(col => group(junction * cols + col + offset, 1)))
+    const routes = exits.map(exit => {
+      const band = bands.find(parts => parts.some(cells => cells.includes(junction * cols + exit)))
+      const last = band.findIndex(cells => cells.includes(junction * cols + exit))
+      return [...stem, ...band.slice(0, last + 1), ...shaft(junction + 1, rows - 1, exit)]
+    })
 
     const reserved = new Set(groups.flat())
     const moves = new Map()
@@ -143,7 +167,13 @@
       }
       if (board[cell] === null) return
     }
-    return { state: opening(level, board), paths: routes.map(cells => cells.map(group => moves.get(group))) }
+    const paths = routes.map(cells => cells.map(group => moves.get(group)))
+    if (endless) {
+      const byLength = exits.map((col, i) => ({ col, length: paths[i].length }))
+        .sort((a, b) => a.length - b.length)
+      level.closeAt = { [byLength[0].col]: 6, [byLength[1].col]: 9 }
+    }
+    return { state: opening(level, board), paths }
   }
 
   function proves({ state, paths }) {
@@ -188,6 +218,22 @@
     return next
   }
 
+  function longRuns(board, level, a, b) {
+    const runs = []
+    for (const cell of [a, b]) {
+      for (const stride of [1, level.cols]) {
+        const tile = board[cell]
+        let first = cell
+        let last = cell
+        while (adjacent(first, first - stride, level) && board[first - stride] === tile) first -= stride
+        while (adjacent(last, last + stride, level) && board[last + stride] === tile) last += stride
+        const length = (last - first) / stride + 1
+        if (length >= 4) runs.push({ first, last, length })
+      }
+    }
+    return runs
+  }
+
   // Only triples crossing the changed cell can be new on a settled board.
   function formsTriple(board, cols, cell, tile, vacated = -1) {
     const same = index => index !== vacated && board[index] === tile
@@ -225,14 +271,18 @@
     return route
   }
 
-  function outlets(route, { cols, rows, exits } = levels[0]) {
+  function outlets(route, { cols, rows, exits, closeAt } = levels[0], water = START_WATER) {
     const bottom = cols * (rows - 1)
-    return route.map(({ cell }) => cell).filter(cell => cell >= bottom && (!exits || exits.includes(cell - bottom)))
+    return route.map(({ cell }) => cell).filter(cell => {
+      const col = cell - bottom
+      return col >= 0 && (!exits || exits.includes(col)) && water < (closeAt?.[col] ?? Infinity)
+    })
   }
 
   function advanceWater(state, elapsedMs) {
     if (state.outcome) return state
-    const water = Math.min(MAX_WATER, START_WATER + Math.floor(elapsedMs / RISE_MS))
+    const pressureMs = Math.max(0, elapsedMs - (state.bonusMs ?? 0))
+    const water = Math.min(MAX_WATER, START_WATER + Math.floor(pressureMs / (state.level.riseMs ?? RISE_MS)))
     if (water <= state.water) return state
     return { ...state, water, outcome: water === MAX_WATER ? 'flooded' : null }
   }
@@ -250,19 +300,27 @@
     for (const index of cleared) board[index] = null
 
     const route = trace(board, level)
-    const drains = outlets(route, level).length > 0
+    const drains = outlets(route, level, state.water).length > 0
     let outcome = null
     if (drains) outcome = 'escaped'
     else if (!availableMove(board, level)) outcome = 'blocked'
+    const bonusMs = level.closeAt && !outcome
+      ? BONUS_MS * Math.min(MAX_BONUSES, Math.floor(route.length / BONUS_CELLS))
+      : state.bonusMs ?? 0
 
     return {
-      state: { level, board, water: drains ? 0 : state.water, route, outcome },
+      state: {
+        level, board, water: drains ? 0 : state.water, route, outcome, bonusMs,
+        ...(drains && level.closeAt ? { rescueWater: state.water } : {}),
+      },
       swapped, cleared,
+      longRuns: cleared.size >= 4 ? longRuns(swapped, level, a, b) : [],
     }
   }
 
   const puzzle = {
     MAX_WATER, FLOOD_MS, levelCount: levels.length, presets, deal,
+    floodTime: ({ riseMs = RISE_MS }) => (MAX_WATER - START_WATER) * riseMs,
     matches, adjacent, advanceWater, play, outlets,
   }
   if (typeof module === 'object') module.exports = puzzle
